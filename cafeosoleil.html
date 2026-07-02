@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Carte du soleil</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js"></script>
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.css" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.9.0/suncalc.js"></script>
+
+<!-- Plugin de recherche d'adresse Mapbox -->
+<script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.0/mapbox-gl-geocoder.min.js"></script>
+<link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.0/mapbox-gl-geocoder.css" rel="stylesheet">
+
+<style>
+  body { margin: 0; padding: 0; }
+
+  #map {
+    position: absolute;
+    top: 0; bottom: 0; width: 100%;
+  }
+
+  #panneau-controle {
+    position: absolute;
+    top: 12px; left: 12px;
+    z-index: 10;
+    background: white;
+    padding: 12px 14px;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    font-family: sans-serif;
+    font-size: 13px;
+    min-width: 200px;
+    transition: padding 0.2s;
+  }
+
+  /* Bouton toggle pour replier/déplier le panneau */
+  #toggle-panneau {
+    position: absolute;
+    top: 6px; right: 6px;
+    width: 26px; height: 26px;
+    border: none;
+    background: #f0f0f0;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: bold;
+    color: #666;
+    line-height: 1;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s;
+  }
+  #toggle-panneau:hover { background: #e0e0e0; }
+
+  #resume-compact {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding-right: 32px; /* place pour le bouton */
+    font-size: 15px;
+  }
+  #resume-compact #resume-heure { font-weight: 600; color: #333; }
+  #resume-compact #resume-date { color: #888; font-size: 12px; }
+
+  /* État replié : on cache le contenu et on affiche le résumé compact */
+  #panneau-controle.replie #panneau-contenu { display: none; }
+  #panneau-controle.replie #resume-compact { display: flex; }
+  #panneau-controle.replie { padding: 8px 12px; min-width: 0; }
+
+  /* Sur mobile (écran étroit), le panneau est replié par défaut et prend moins de place */
+  @media (max-width: 600px) {
+    #panneau-controle { max-width: calc(100vw - 24px); }
+    #panneau-controle:not(.replie) #panneau-contenu { max-width: 100%; }
+  }
+  #panneau-controle label {
+    display: block;
+    margin-bottom: 4px;
+    color: #555;
+  }
+  #panneau-controle input[type="date"] {
+    margin-bottom: 8px;
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  /* Slider de temps */
+  #conteneur-slider {
+    margin-top: 4px;
+  }
+  #label-heure {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 4px;
+  }
+  #label-heure span { color: #555; }
+  #affichage-heure {
+    font-size: 16px;
+    font-weight: 600;
+    color: #333;
+    font-variant-numeric: tabular-nums;
+  }
+  #slider-heure {
+    width: 100%;
+    margin: 0;
+    accent-color: #e07a3f;
+    cursor: pointer;
+  }
+  #axe-heures {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: #bbb;
+    margin-top: 2px;
+  }
+  #statut { margin-top: 4px; color: #888; font-style: italic; }
+  #message-zoom { display: none; color: #a05a2c; margin-top: 4px; }
+
+  /* Popup d'ensoleillement au clic */
+  .popup-soleil {
+    font-family: sans-serif;
+    min-width: 220px;
+  }
+  .popup-soleil h4 {
+    margin: 0 0 8px 0;
+    font-size: 13px;
+    color: #333;
+  }
+  .frise-journee {
+    display: flex;
+    height: 22px;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 6px;
+  }
+  .frise-journee .segment {
+    height: 100%;
+  }
+  .frise-journee .segment.soleil { background: #f0b94a; }
+  .frise-journee .segment.ombre  { background: #4a6fa5; opacity: 0.7; }
+  .frise-journee .segment.nuit   { background: #1a1a2e; opacity: 0.35; }
+  .axe-frise {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9px;
+    color: #aaa;
+    margin-bottom: 6px;
+  }
+  .legende-frise {
+    display: flex;
+    gap: 10px;
+    font-size: 11px;
+    color: #555;
+  }
+  .legende-frise span { display: flex; align-items: center; gap: 4px; }
+  .legende-frise .puce {
+    width: 10px; height: 10px; border-radius: 2px; display: inline-block;
+  }
+
+  /* Intégration de la barre de recherche dans le panneau */
+  .mapboxgl-ctrl-geocoder {
+    box-shadow: none !important;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin-bottom: 10px;
+    font-size: 13px !important;
+  }
+  .mapboxgl-ctrl-geocoder input {
+    font-size: 13px !important;
+    padding: 6px 36px !important;
+  }
+  .mapboxgl-ctrl-geocoder .mapboxgl-ctrl-geocoder--icon-search {
+    top: 8px !important;
+    left: 8px !important;
+  }
+
+  /* Filtres centres d'intérêt */
+  #section-poi {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #eee;
+  }
+  #section-poi .titre-section {
+    font-size: 11px;
+    font-weight: 600;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 7px;
+  }
+  #filtres-categorie {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 8px;
+  }
+  .btn-categorie {
+    padding: 4px 9px;
+    border-radius: 12px;
+    border: 1.5px solid #ddd;
+    background: white;
+    font-size: 11px;
+    color: #555;
+    cursor: pointer;
+    transition: all 0.15s;
+    opacity: 0.4; /* masqué par défaut (visuellement grisé) */
+  }
+  .btn-categorie:hover { border-color: #aaa; opacity: 0.7; }
+  .btn-categorie.actif {
+    background: #e07a3f;
+    border-color: #e07a3f;
+    color: white;
+    font-weight: 600;
+    opacity: 1; /* bien visible quand actif */
+  }
+  #filtre-soleil-uniquement {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #444;
+    cursor: pointer;
+    user-select: none;
+    margin-top: 2px;
+  }
+  #filtre-soleil-uniquement input[type="checkbox"] {
+    accent-color: #e07a3f;
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+  }
+
+  #astuce-3d {
+    position: absolute;
+    bottom: 12px; left: 12px;
+    z-index: 10;
+    background: rgba(255,255,255,0.9);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-family: sans-serif;
+    font-size: 12px;
+    color: #555;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="panneau-controle">
+  <button id="toggle-panneau" title="Réduire / déplier">
+    <span id="toggle-icone">−</span>
+  </button>
+  <div id="panneau-contenu">
+    <div id="conteneur-recherche"></div>
+    <label for="input-date">Date</label>
+    <input type="date" id="input-date">
+
+    <div id="conteneur-slider">
+      <div id="label-heure">
+        <span>Heure</span>
+        <span id="affichage-heure">12:00</span>
+      </div>
+      <input type="range" id="slider-heure" min="0" max="1439" step="5" value="720">
+      <div id="axe-heures">
+        <span>0h</span><span>6h</span><span>12h</span><span>18h</span><span>24h</span>
+      </div>
+    </div>
+    <div id="statut">Chargement...</div>
+    <div id="message-zoom">Dézoom trop important — rapprochez-vous pour voir les ombres.</div>
+
+    <div id="section-poi">
+      <div class="titre-section">Lieux d'intérêt</div>
+      <div id="filtres-categorie">
+        <button class="btn-categorie actif" data-categorie="cafe">☕ Cafés</button>
+      </div>
+      <label id="filtre-soleil-uniquement">
+        <input type="checkbox" id="checkbox-soleil"> Uniquement au soleil ☀️
+      </label>
+    </div>
+  </div>
+  <!-- Résumé compact affiché quand le panneau est replié (mobile essentiellement) -->
+  <div id="resume-compact">
+    <span id="resume-heure">12:00</span>
+    <span id="resume-date"></span>
+  </div>
+</div>
+
+<div id="astuce-3d">🧭 Clic droit + glisser pour incliner / tourner la vue en 3D</div>
+
+<script>
+  // ============================================================
+  // Clé Mapbox
+  // ============================================================
+  mapboxgl.accessToken = "pk.eyJ1Ijoic2FtdGVtcCIsImEiOiJjbXIzOTVoNmkwMmJ1Mnpxd21udGNobzJrIn0.31QMwKd5W0icWIx9VOq2YA";
+
+  const CENTRE_DEPART = [2.3437, 48.8482]; // Sorbonne
+  const refLon = CENTRE_DEPART[0];
+  const refLat = CENTRE_DEPART[1];
+
+  const METRES_PAR_DEGRE_LAT = 111320;
+  const METRES_PAR_DEGRE_LON = METRES_PAR_DEGRE_LAT * Math.cos(refLat * Math.PI / 180);
+
+  function gpsVersMetres(lon, lat) {
+    return { x: (lon - refLon) * METRES_PAR_DEGRE_LON, z: (lat - refLat) * METRES_PAR_DEGRE_LAT };
+  }
+  function metresVersGps(x, z) {
+    return { lon: refLon + x / METRES_PAR_DEGRE_LON, lat: refLat + z / METRES_PAR_DEGRE_LAT };
+  }
+
+  // ============================================================
+  // Carte Mapbox
+  // ============================================================
+  const map = new mapboxgl.Map({
+    container: "map",
+    style: "mapbox://styles/mapbox/light-v11",
+    center: CENTRE_DEPART,
+    zoom: 17,
+    pitch: 60,
+    bearing: -17,
+    antialias: true
+  });
+
+  map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), "top-right");
+
+  // ============================================================
+  // Garde-fou : on plafonne la zone de calcul à un rayon fixe autour
+  // du centre pour éviter un nombre démesuré de bâtiments à traiter.
+  // ============================================================
+  const RAYON_CALCUL_METRES = 700;
+
+  function obtenirZoneDeCalcul() {
+    const centre = map.getCenter();
+    const centreM = gpsVersMetres(centre.lng, centre.lat);
+    const vue = map.getBounds();
+    const clamp = (v, c) => !isFinite(v) ? c + RAYON_CALCUL_METRES : Math.max(c - RAYON_CALCUL_METRES, Math.min(c + RAYON_CALCUL_METRES, v));
+    const minBrut = gpsVersMetres(vue.getWest(), vue.getSouth());
+    const maxBrut = gpsVersMetres(vue.getEast(), vue.getNorth());
+    return {
+      xMin: clamp(minBrut.x, centreM.x), xMax: clamp(maxBrut.x, centreM.x),
+      zMin: clamp(minBrut.z, centreM.z), zMax: clamp(maxBrut.z, centreM.z)
+    };
+  }
+
+  function affichageLimite() {
+    const vue = map.getBounds();
+    const min = gpsVersMetres(vue.getWest(), vue.getSouth());
+    const max = gpsVersMetres(vue.getEast(), vue.getNorth());
+    const w = max.x - min.x, h = max.z - min.z;
+    return !isFinite(w) || !isFinite(h) || w > RAYON_CALCUL_METRES * 2.2 || h > RAYON_CALCUL_METRES * 2.2;
+  }
+
+  // ============================================================
+  // Enveloppe convexe (algorithme de Jarvis, dit "gift wrapping")
+  // Prend un tableau de points [x, z] et renvoie leur enveloppe convexe.
+  // Utilisé pour construire le polygone d'ombre de chaque bâtiment :
+  // on projette chaque sommet du bâtiment dans la direction de l'ombre,
+  // puis on calcule l'enveloppe convexe de l'ensemble {sommets originaux +
+  // sommets projetés} — ce qui donne la forme exacte de l'ombre au sol
+  // pour un bâtiment convexe (très bonne approximation pour les autres).
+  // ============================================================
+  function enveloppeConvexe(points) {
+    const n = points.length;
+    if (n < 3) return points;
+
+    // Point le plus à gauche comme point de départ
+    let depart = 0;
+    for (let i = 1; i < n; i++) if (points[i][0] < points[depart][0]) depart = i;
+
+    const hull = [];
+    let courant = depart;
+    do {
+      hull.push(points[courant]);
+      let suivant = (courant + 1) % n;
+      for (let i = 0; i < n; i++) {
+        // Produit vectoriel : négatif = point i est plus à gauche = plus anti-horaire
+        const croix =
+          (points[suivant][0] - points[courant][0]) * (points[i][1] - points[courant][1]) -
+          (points[suivant][1] - points[courant][1]) * (points[i][0] - points[courant][0]);
+        if (croix < 0) suivant = i;
+      }
+      courant = suivant;
+    } while (courant !== depart && hull.length <= n + 1);
+
+    return hull;
+  }
+
+  // ============================================================
+  // Génération des polygones d'ombre
+  //
+  // Pour chaque bâtiment visible dans la zone de calcul :
+  //   1. On calcule la longueur de l'ombre : hauteur / tan(élévation)
+  //   2. On projette chaque sommet du bâtiment dans la direction opposée
+  //      au soleil (direction de l'ombre au sol)
+  //   3. On calcule l'enveloppe convexe de {sommets + sommets projetés}
+  //   4. On renvoie ce polygone comme zone d'ombre GeoJSON
+  //
+  // Avantage : aucun raycasting, aucune grille — juste de la géométrie.
+  // Le rendu est précis, fluide, et les ombres ont la vraie forme des bâtiments.
+  // ============================================================
+  const batimentsDejaTraites = new Set(); // évite les doublons inter-appels
+
+  function genererOmbresBatiments(dateChoisie) {
+    const centre = map.getCenter();
+    const position = SunCalc.getPosition(dateChoisie, centre.lat, centre.lng);
+    const elevation = position.altitude;
+    const azimut = position.azimuth;
+
+    if (elevation <= 0) return { type: "FeatureCollection", features: [] };
+
+    const longueurParMetre = 1 / Math.tan(elevation); // mètres d'ombre au sol par mètre de hauteur
+    // Direction de l'ombre au sol (opposée au soleil).
+    // SunCalc : azimut 0 = Sud, négatif = Est, positif = Ouest.
+    // Vecteur soleil : (-sin(az), -cos(az)) en (x=Est, z=Nord)
+    // Vecteur ombre (opposé) : (+sin(az), +cos(az))
+    const offsetDirX =  Math.sin(azimut) * longueurParMetre;
+    const offsetDirZ =  Math.cos(azimut) * longueurParMetre;
+
+    const zone = obtenirZoneDeCalcul();
+    const features = [];
+    const dejaCetAppel = new Set();
+
+    const batimentsMapbox = map.querySourceFeatures("composite", {
+      sourceLayer: "building",
+      filter: ["==", "extrude", "true"]
+    });
+
+    batimentsMapbox.forEach(feature => {
+      const geom = feature.geometry;
+      if (!geom) return;
+
+      let hauteur = parseFloat(feature.properties.height);
+      if (isNaN(hauteur) || hauteur <= 0) hauteur = 18;
+
+      const polygones = geom.type === "Polygon" ? [geom.coordinates]
+                       : geom.type === "MultiPolygon" ? geom.coordinates
+                       : null;
+      if (!polygones) return;
+
+      polygones.forEach(anneaux => {
+        const anneau = anneaux[0];
+        if (!anneau || anneau.length < 3) return;
+
+        // Centroïde pour déduplication
+        let lonSum = 0, latSum = 0;
+        anneau.forEach(([lon, lat]) => { lonSum += lon; latSum += lat; });
+        const cle = `${(lonSum / anneau.length).toFixed(5)}_${(latSum / anneau.length).toFixed(5)}_${hauteur.toFixed(0)}`;
+        if (dejaCetAppel.has(cle)) return;
+        dejaCetAppel.add(cle);
+
+        // Vérification : le bâtiment ou son ombre est-il dans la zone visible ?
+        const centreM = gpsVersMetres(lonSum / anneau.length, latSum / anneau.length);
+        if (centreM.x < zone.xMin - hauteur * 2 || centreM.x > zone.xMax + hauteur * 2 ||
+            centreM.z < zone.zMin - hauteur * 2 || centreM.z > zone.zMax + hauteur * 2) return;
+
+        // Construction du polygone d'ombre :
+        // sommets originaux du bâtiment + sommets projetés dans la direction de l'ombre
+        const tousPoints = [];
+        anneau.forEach(([lon, lat]) => {
+          const { x, z } = gpsVersMetres(lon, lat);
+          tousPoints.push([x, z]);                                              // sommet original
+          tousPoints.push([x + offsetDirX * hauteur, z + offsetDirZ * hauteur]); // sommet projeté
+        });
+
+        // L'enveloppe convexe de ces points donne le polygone d'ombre au sol
+        const hull = enveloppeConvexe(tousPoints);
+        if (hull.length < 3) return;
+
+        const coordsGps = hull.map(([x, z]) => {
+          const g = metresVersGps(x, z);
+          return [g.lon, g.lat];
+        });
+        coordsGps.push(coordsGps[0]); // fermeture du polygone
+
+        features.push({
+          type: "Feature",
+          geometry: { type: "Polygon", coordinates: [coordsGps] },
+          properties: {}
+        });
+      });
+    });
+
+    return { type: "FeatureCollection", features };
+  }
+
+  // ============================================================
+  // Trait indiquant la direction du soleil depuis le centre de la carte
+  // ============================================================
+  function genererRayonSoleil(dateChoisie) {
+    const centre = map.getCenter();
+    const position = SunCalc.getPosition(dateChoisie, centre.lat, centre.lng);
+    if (position.altitude <= 0) return { type: "FeatureCollection", features: [] };
+
+    const { x, z } = gpsVersMetres(centre.lng, centre.lat);
+    const LONGUEUR = 35;
+    // Vecteur vers le soleil : (-sin(az), -cos(az)) en (x, z)
+    const fin = metresVersGps(
+      x - Math.sin(position.azimuth) * LONGUEUR,
+      z - Math.cos(position.azimuth) * LONGUEUR
+    );
+
+    return {
+      type: "FeatureCollection",
+      features: [{ type: "Feature", geometry: { type: "LineString", coordinates: [[centre.lng, centre.lat], [fin.lon, fin.lat]] }, properties: {} }]
+    };
+  }
+
+  // ============================================================
+  // Mise en place de la carte
+  // ============================================================
+  map.on("load", () => {
+
+    // Parcs et zones vertes en vert vif — insérés avant les bâtiments pour être dessous
+    map.addLayer({
+      id: "parcs-verts",
+      source: "composite",
+      "source-layer": "landuse",
+      type: "fill",
+      filter: ["in", "class", "park", "cemetery", "grass"],
+      paint: {
+        "fill-color": "#7cc48f",
+        "fill-opacity": 0.55
+      }
+    });
+
+    // Cours d'eau et lacs en bleu franc
+    map.addLayer({
+      id: "eau-bleue",
+      source: "composite",
+      "source-layer": "water",
+      type: "fill",
+      paint: {
+        "fill-color": "#4a9dd4",
+        "fill-opacity": 0.75
+      }
+    });
+
+    // Bâtiments visuels 3D en gris
+    map.addLayer({
+      id: "batiments-3d",
+      source: "composite",
+      "source-layer": "building",
+      filter: ["==", "extrude", "true"],
+      type: "fill-extrusion",
+      minzoom: 14,
+      paint: {
+        "fill-extrusion-color": "#b8b8b8",
+        "fill-extrusion-height": ["get", "height"],
+        "fill-extrusion-base": ["get", "min_height"],
+        "fill-extrusion-opacity": 0.85
+      }
+    });
+
+    // Couche d'ombres : polygones semi-transparents projetés depuis les bâtiments
+    map.addSource("ombres", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({
+      id: "ombres-layer",
+      type: "fill",
+      source: "ombres",
+      paint: {
+        "fill-color": "#1a2f5a",
+        "fill-opacity": 0.30,
+        "fill-outline-color": "rgba(0,0,0,0)"
+      }
+    });
+
+    // Trait de direction du soleil
+    map.addSource("rayon-soleil", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({
+      id: "rayon-soleil-layer",
+      type: "line",
+      source: "rayon-soleil",
+      paint: { "line-color": "#f0b94a", "line-width": 2, "line-dasharray": [1, 1] }
+    });
+
+    // Couche POI : cercles colorés selon ensoleillement.
+    // Les restaurants ont un contour épais gris foncé, les cafés un contour blanc,
+    // pour les différencier visuellement sans dépendre d'emojis (voir explication
+    // sur "glyphs > 65535" plus bas).
+    map.addSource("poi-lieux", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+    map.addLayer({
+      id: "poi-cercles",
+      type: "circle",
+      source: "poi-lieux",
+      paint: {
+        "circle-radius": ["case", ["==", ["get", "type"], "restaurant"], 8, 9],
+        "circle-color": ["case", ["get", "auSoleil"], "#f0b94a", "#4a6fa5"],
+        "circle-stroke-width": ["case", ["==", ["get", "type"], "restaurant"], 3, 2],
+        "circle-stroke-color": ["case", ["==", ["get", "type"], "restaurant"], "#333", "white"],
+        "circle-opacity": 0.95
+      }
+    });
+    map.addLayer({
+      id: "poi-labels",
+      type: "symbol",
+      source: "poi-lieux",
+      minzoom: 17, // n'affiche les noms qu'en très gros plan pour éviter la surcharge Mapbox
+      layout: {
+        // On enlève l'emoji du label : les emojis (☕ 🍽 📍) sont dans une plage Unicode
+        // que Mapbox ne peut pas rendre en tant que texte de carte, ce qui déclenche
+        // l'erreur "glyphs > 65535 not supported" en boucle et pollue toute la console.
+        // Les emojis restent affichés dans les popups (rendues en HTML natif, sans souci).
+        "text-field": ["get", "nom"],
+        "text-size": 11,
+        "text-offset": [0, 1.4],
+        "text-anchor": "top",
+        "text-optional": true,
+        "text-allow-overlap": false
+      },
+      paint: {
+        "text-color": "#333",
+        "text-halo-color": "white",
+        "text-halo-width": 1.5
+      }
+    });
+
+    const inputDate = document.getElementById("input-date");
+    const sliderHeure = document.getElementById("slider-heure");
+    const affichageHeure = document.getElementById("affichage-heure");
+    const statut = document.getElementById("statut");
+    const messageZoom = document.getElementById("message-zoom");
+
+    // Initialisation : date d'aujourd'hui, heure actuelle
+    const maintenant = new Date();
+    inputDate.value = maintenant.toISOString().split("T")[0];
+    const minutesActuelles = maintenant.getHours() * 60 + maintenant.getMinutes();
+    sliderHeure.value = minutesActuelles;
+
+    // Convertit la valeur du slider (minutes depuis minuit) en objet Date
+    function dateChoisie() {
+      const minutes = parseInt(sliderHeure.value, 10);
+      const hh = Math.floor(minutes / 60).toString().padStart(2, "0");
+      const mm = (minutes % 60).toString().padStart(2, "0");
+      affichageHeure.textContent = `${hh}:${mm}`;
+      return new Date(`${inputDate.value}T${hh}:${mm}:00`);
+    }
+
+    // Initialisation de l'affichage de l'heure
+    dateChoisie();
+
+    function rafraichirAffichage() {
+      const date = dateChoisie();
+      map.getSource("ombres")?.setData(genererOmbresBatiments(date));
+      map.getSource("rayon-soleil")?.setData(genererRayonSoleil(date));
+      messageZoom.style.display = affichageLimite() ? "block" : "none";
+      // Les POI sont rafraîchis séparément via rafraichirPOI(),
+      // appelée uniquement sur action explicite (bouton, slider, moveend).
+    }
+
+    let delaiRecalcul = null;
+    function surTuilesPretes() {
+      clearTimeout(delaiRecalcul);
+      delaiRecalcul = setTimeout(() => {
+        const nb = map.querySourceFeatures("composite", { sourceLayer: "building", filter: ["==", "extrude", "true"] }).length;
+        statut.textContent = `${nb} bâtiments visibles.`;
+        rafraichirAffichage();
+      }, 80);
+    }
+
+    map.on("idle", surTuilesPretes);
+    map.on("sourcedata", (e) => { if (e.sourceId === "composite" && e.isSourceLoaded) surTuilesPretes(); });
+    map.on("moveend", () => {
+      clearTimeout(delaiRecalcul);
+      delaiRecalcul = setTimeout(() => {
+        surTuilesPretes();
+        rafraichirPOI();
+      }, 150);
+    });
+    inputDate.addEventListener("input", () => { rafraichirAffichage(); rafraichirPOI(); });
+    sliderHeure.addEventListener("input", () => { rafraichirAffichage(); rafraichirPOI(); });
+
+    rafraichirAffichage();
+    map.once("idle", () => rafraichirPOI()); // affiche tous les POI dès que la carte est prête
+
+    // ----------------------------------------------------------
+    // Clic sur la carte → popup avec frise d'ensoleillement sur la journée
+    // ----------------------------------------------------------
+    let popupClic = null;
+
+    function calculerFriseJournee(lon, lat, date) {
+      const segments = [];
+      let dernierEtat = null;
+      let debutSegment = 0;
+
+      for (let minutes = 0; minutes <= 1440; minutes += 15) {
+        const d = new Date(date);
+        d.setHours(0, 0, 0, 0);
+        d.setMinutes(minutes);
+        const pos = SunCalc.getPosition(d, lat, lon);
+
+        let etat;
+        if (pos.altitude <= 0) {
+          etat = "nuit";
+        } else {
+          const longueurParMetre = 1 / Math.tan(pos.altitude);
+          const offsetX = Math.sin(pos.azimuth) * longueurParMetre;
+          const offsetZ = Math.cos(pos.azimuth) * longueurParMetre;
+
+          const batiments = map.querySourceFeatures("composite", {
+            sourceLayer: "building", filter: ["==", "extrude", "true"]
+          });
+
+          let estOmbre = false;
+          for (const feature of batiments) {
+            if (!feature.geometry) continue;
+            let hauteur = parseFloat(feature.properties.height);
+            if (isNaN(hauteur) || hauteur <= 0) hauteur = 18;
+
+            const polygones = feature.geometry.type === "Polygon" ? [feature.geometry.coordinates]
+              : feature.geometry.type === "MultiPolygon" ? feature.geometry.coordinates : null;
+            if (!polygones) continue;
+
+            for (const anneaux of polygones) {
+              const anneau = anneaux[0];
+              if (!anneau || anneau.length < 3) continue;
+
+              // On remonte depuis le point testé vers le soleil à la hauteur du bâtiment,
+              // puis on vérifie si ce point remonté tombe à l'intérieur du bâtiment.
+              // Si oui, le bâtiment projette bien son ombre sur notre point d'intérêt.
+              const { x, z } = gpsVersMetres(lon, lat);
+              const testGps = metresVersGps(x - offsetX * hauteur, z - offsetZ * hauteur);
+
+              // Algorithme point-dans-polygone (ray casting 2D)
+              let dedans = false;
+              for (let i = 0, j = anneau.length - 1; i < anneau.length; j = i++) {
+                const xi = anneau[i][0], yi = anneau[i][1];
+                const xj = anneau[j][0], yj = anneau[j][1];
+                if (((yi > testGps.lat) !== (yj > testGps.lat)) &&
+                    testGps.lon < (xj - xi) * (testGps.lat - yi) / (yj - yi) + xi) {
+                  dedans = !dedans;
+                }
+              }
+              if (dedans) { estOmbre = true; break; }
+            }
+            if (estOmbre) break;
+          }
+          etat = estOmbre ? "ombre" : "soleil";
+        }
+
+        if (etat !== dernierEtat) {
+          if (dernierEtat !== null) segments.push({ etat: dernierEtat, debut: debutSegment, fin: minutes });
+          dernierEtat = etat;
+          debutSegment = minutes;
+        }
+      }
+      segments.push({ etat: dernierEtat, debut: debutSegment, fin: 1440 });
+      return segments;
+    }
+
+    map.on("click", "poi-cercles", (e) => {
+      if (!e.features.length) return;
+      e.preventDefault();
+      const f = e.features[0];
+      const { nom, auSoleil, emoji } = f.properties;
+      const [lon, lat] = f.geometry.coordinates;
+      if (popupClic) { popupClic.remove(); popupClic = null; }
+
+      const date = dateChoisie();
+      const segments = calculerFriseJournee(lon, lat, date);
+      const minutesSoleil = segments.filter(s => s.etat === "soleil").reduce((sum, s) => sum + s.fin - s.debut, 0);
+      const heuresSoleil = Math.floor(minutesSoleil / 60);
+      const minSoleil = minutesSoleil % 60;
+
+      let friseHTML = '<div class="frise-journee">';
+      segments.forEach(s => {
+        friseHTML += `<div class="segment ${s.etat}" style="width:${((s.fin - s.debut) / 1440 * 100).toFixed(2)}%"></div>`;
+      });
+      friseHTML += '</div>';
+
+      popupClic = new mapboxgl.Popup({ closeButton: true, maxWidth: "260px" })
+        .setLngLat([lon, lat])
+        .setHTML(`
+          <div class="popup-soleil">
+            <h4>${emoji} ${nom}</h4>
+            <p style="margin:0 0 6px;font-size:12px;color:${auSoleil ? "#c47c00" : "#4a6fa5"}">
+              ${auSoleil ? "☀️ Au soleil en ce moment" : "🌑 À l'ombre en ce moment"}
+            </p>
+            ${friseHTML}
+            <div class="axe-frise"><span>0h</span><span>6h</span><span>12h</span><span>18h</span><span>24h</span></div>
+            <div style="font-size:11px;color:#888;margin-top:4px">
+              ☀️ ${heuresSoleil}h${minSoleil > 0 ? minSoleil + "min" : ""} de soleil aujourd'hui
+            </div>
+          </div>`)
+        .addTo(map);
+    });
+
+    // Curseur pointeur au survol des POI
+    map.on("mouseenter", "poi-cercles", () => { map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", "poi-cercles", () => { map.getCanvas().style.cursor = ""; });
+
+    // ----------------------------------------------------------
+    // Centres d'intérêt (POI)
+    // Les variables et listeners sont définis en dehors de ce callback
+    // (voir bas du script) pour garantir leur enregistrement immédiat.
+    // rafraichirPOI() est appelée depuis rafraichirAffichage() et depuis
+    // les boutons dès que la carte est prête.
+    // ----------------------------------------------------------
+
+    // Gestion des boutons de catégorie
+    document.querySelectorAll(".btn-categorie").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const cat = btn.dataset.categorie;
+        if (categoriesActives.has(cat)) {
+          categoriesActives.delete(cat);
+          btn.classList.remove("actif");
+        } else {
+          categoriesActives.add(cat);
+          btn.classList.add("actif");
+        }
+        rafraichirPOI();
+      });
+    });
+
+    document.getElementById("checkbox-soleil").addEventListener("change", (e) => {
+      seulementAuSoleil = e.target.checked;
+      rafraichirPOI();
+    });
+
+    // ----------------------------------------------------------
+    // Barre de recherche d'adresse
+    // ----------------------------------------------------------
+    const geocoder = new MapboxGeocoder({
+      accessToken: mapboxgl.accessToken,
+      mapboxgl: mapboxgl,
+      placeholder: "Rechercher une adresse...",
+      language: "fr",
+      countries: "fr",  // priorité aux résultats français (retirer pour usage mondial)
+      zoom: 17,
+      marker: false     // pas de marqueur : la carte se centre directement
+    });
+    document.getElementById("conteneur-recherche").appendChild(geocoder.onAdd(map));
+  });
+
+  // ============================================================
+  // Logique POI Cafés (via Overpass / OpenStreetMap)
+  // ============================================================
+  let seulementAuSoleil = false;
+  let delaiPOI = null;
+
+  // Cache mémoire des cafés par tuile (~800m de côté).
+  const poiCache = new Map();
+
+  // Ensemble des tuiles dont la requête est en cours (pas encore terminée).
+  // Distincte de poiCache : une tuile est "en cours" temporairement pour éviter les
+  // requêtes concurrentes, puis retirée. Contrairement à poiCache, une tuile "en cours"
+  // qui échoue est retirée et permettra un nouvel essai — pas de tuile morte bloquée.
+  const tuilesEnCours = new Set();
+
+  // Timestamp jusqu'auquel on doit attendre avant de refaire une requête (rate-limit 429).
+  let pauseJusqua = 0;
+  const TAILLE_TUILE_POI = 0.008;
+  const CLE_STORAGE = "cafesCache_v3";
+
+  // Chargement du cache persistant depuis localStorage au démarrage : les tuiles
+  // déjà chargées lors des sessions précédentes ne seront pas re-requêtées.
+  // Expire au bout de 7 jours pour rester à jour.
+  try {
+    const brut = localStorage.getItem(CLE_STORAGE);
+    if (brut) {
+      const stocke = JSON.parse(brut);
+      const now = Date.now();
+      if (stocke.timestamp && (now - stocke.timestamp) < 7 * 24 * 3600 * 1000) {
+        for (const [cle, valeur] of Object.entries(stocke.data)) {
+          poiCache.set(cle, valeur);
+        }
+      }
+    }
+  } catch (e) { /* cache corrompu, on ignore */ }
+
+  // Sauvegarde du cache en localStorage, debounced pour ne pas écrire à chaque tuile
+  let delaiSave = null;
+  function sauvegarderCache() {
+    clearTimeout(delaiSave);
+    delaiSave = setTimeout(() => {
+      try {
+        const data = {};
+        poiCache.forEach((v, k) => { data[k] = v; });
+        localStorage.setItem(CLE_STORAGE, JSON.stringify({ timestamp: Date.now(), data }));
+      } catch (e) { /* quota dépassé, tant pis */ }
+    }, 1000);
+  }
+
+  function indexTuilePOI(lon, lat) {
+    return { ix: Math.floor(lon / TAILLE_TUILE_POI), iz: Math.floor(lat / TAILLE_TUILE_POI) };
+  }
+
+  // Serveurs Overpass — on essaie le premier, puis un miroir si échec
+  const SERVEURS_OVERPASS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter"
+  ];
+
+  async function chargerPOI() {
+    if (typeof map === "undefined") return;
+    const vue = map.getBounds();
+    const { ix: ixMin, iz: izMin } = indexTuilePOI(vue.getWest(), vue.getSouth());
+    const { ix: ixMax, iz: izMax } = indexTuilePOI(vue.getEast(), vue.getNorth());
+
+    // Centre de la vue : sert à trier les tuiles par ordre de priorité
+    const centre = map.getCenter();
+    const { ix: ixCentre, iz: izCentre } = indexTuilePOI(centre.lng, centre.lat);
+
+    // Tuiles à charger : ni déjà en cache, ni en cours de chargement
+    const manquantes = [];
+    for (let ix = ixMin; ix <= ixMax; ix++)
+      for (let iz = izMin; iz <= izMax; iz++) {
+        const cle = `${ix}_${iz}`;
+        if (!poiCache.has(cle) && !tuilesEnCours.has(cle)) manquantes.push({ ix, iz, cle });
+      }
+
+    if (manquantes.length === 0) return;
+
+    // Tri : tuiles les plus proches du centre chargées en premier
+    manquantes.sort((a, b) => {
+      const da = (a.ix - ixCentre) ** 2 + (a.iz - izCentre) ** 2;
+      const db = (b.ix - ixCentre) ** 2 + (b.iz - izCentre) ** 2;
+      return da - db;
+    });
+
+    // Marque les tuiles comme "en cours" (pas comme "chargées") pour éviter les requêtes
+    // concurrentes, MAIS permettre un nouvel essai automatique si la requête échoue.
+    manquantes.forEach(t => tuilesEnCours.add(t.cle));
+
+    // ---- Chargement tuile par tuile, avec priorité au centre ----
+    for (const t of manquantes) {
+      // Si on est en pause 429 (rate-limit Overpass), on attend que ça passe
+      if (pauseJusqua > Date.now()) {
+        await new Promise(r => setTimeout(r, pauseJusqua - Date.now()));
+      }
+
+      const sud   = t.iz * TAILLE_TUILE_POI;
+      const nord  = (t.iz + 1) * TAILLE_TUILE_POI;
+      const ouest = t.ix * TAILLE_TUILE_POI;
+      const est   = (t.ix + 1) * TAILLE_TUILE_POI;
+
+      const requete = `[out:json][timeout:8];node["amenity"~"^(cafe|restaurant|bistro)$"](${sud},${ouest},${nord},${est});out body;`;
+
+      let data = null;
+      let dernierStatus = null;
+
+      for (let tentative = 0; tentative < 2 && !data; tentative++) {
+        if (tentative > 0) await new Promise(r => setTimeout(r, 800));
+        for (const url of SERVEURS_OVERPASS) {
+          try {
+            const r = await fetch(url, { method: "POST", body: requete });
+            dernierStatus = r.status;
+            if (r.status === 429) {
+              // Rate-limit atteint : on impose une pause globale de 3 secondes
+              // pour toutes les prochaines requêtes (pas juste celle-ci).
+              pauseJusqua = Date.now() + 3000;
+              throw new Error(429);
+            }
+            if (!r.ok) throw new Error(r.status);
+            data = await r.json();
+            break;
+          } catch (e) { /* on essaie le serveur suivant */ }
+        }
+      }
+
+      tuilesEnCours.delete(t.cle);
+
+      if (!data) {
+        if (dernierStatus === 429) console.warn(`Overpass rate-limit atteint pour tuile ${t.cle}, réessai plus tard`);
+        else if (dernierStatus === 504) console.warn(`Overpass surchargé pour tuile ${t.cle}, réessai plus tard`);
+        continue;
+      }
+
+      const liste = [];
+      data.elements.forEach(el => {
+        if (typeof el.lat !== "number" || typeof el.lon !== "number" || !el.tags) return;
+        const type = el.tags.amenity;
+        liste.push({
+          lon: el.lon,
+          lat: el.lat,
+          nom: el.tags.name || (type === "restaurant" ? "Restaurant" : "Café"),
+          type
+        });
+      });
+      poiCache.set(t.cle, liste);
+
+      // Petite pause entre chaque requête pour ne pas déclencher le rate-limit Overpass.
+      // 200ms entre requêtes = 5 requêtes/seconde max, bien en dessous des limites.
+      await new Promise(r => setTimeout(r, 200));
+
+      // Rafraîchit l'affichage dès qu'une tuile est prête (pas d'attente des autres)
+      afficherPOI();
+      sauvegarderCache();
+    }
+  }
+
+  document.getElementById("checkbox-soleil").addEventListener("change", (e) => {
+    seulementAuSoleil = e.target.checked;
+    afficherPOI();
+  });
+
+  // ============================================================
+  // Panneau rétractable (utile surtout sur mobile où l'espace est précieux)
+  // ============================================================
+  (function initPanneau() {
+    const panneau = document.getElementById("panneau-controle");
+    const btnToggle = document.getElementById("toggle-panneau");
+    const icone = document.getElementById("toggle-icone");
+    const resumeHeure = document.getElementById("resume-heure");
+    const resumeDate = document.getElementById("resume-date");
+
+    // Sur mobile (écran ≤ 600px), le panneau est replié par défaut
+    if (window.innerWidth <= 600) panneau.classList.add("replie");
+    icone.textContent = panneau.classList.contains("replie") ? "+" : "−";
+
+    btnToggle.addEventListener("click", () => {
+      panneau.classList.toggle("replie");
+      icone.textContent = panneau.classList.contains("replie") ? "+" : "−";
+    });
+
+    // Met à jour le résumé compact quand l'heure ou la date changent
+    function majResume() {
+      const inputDate = document.getElementById("input-date");
+      const sliderHeure = document.getElementById("slider-heure");
+      const minutes = parseInt(sliderHeure.value, 10);
+      const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
+      const mm = String(minutes % 60).padStart(2, "0");
+      resumeHeure.textContent = `${hh}:${mm}`;
+      const d = inputDate.value ? new Date(inputDate.value) : new Date();
+      resumeDate.textContent = d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+    }
+    majResume();
+    document.getElementById("input-date").addEventListener("input", majResume);
+    document.getElementById("slider-heure").addEventListener("input", majResume);
+  })();
+
+  function rafraichirPOI() {
+    if (typeof map === "undefined" || !map.getSource("poi-lieux")) return;
+    // Affichage immédiat avec ce qu'on a déjà en cache (pas d'attente réseau visible),
+    // puis chargement asynchrone des tuiles manquantes en arrière-plan.
+    afficherPOI();
+    clearTimeout(delaiPOI);
+    delaiPOI = setTimeout(async () => {
+      await chargerPOI();
+      afficherPOI();
+    }, 300);
+  }
+
+  function afficherPOI() {
+    if (!map?.getSource("poi-lieux")) return;
+    const inputDate = document.getElementById("input-date");
+    const sliderHeure = document.getElementById("slider-heure");
+    const minutes = parseInt(sliderHeure.value, 10);
+    const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
+    const mm = String(minutes % 60).padStart(2, "0");
+    const date = new Date(`${inputDate.value}T${hh}:${mm}:00`);
+    const centre = map.getCenter();
+    const pos = SunCalc.getPosition(date, centre.lat, centre.lng);
+
+    // Pré-extraction des bâtiments (une seule fois pour tous les cafés)
+    let offsetX = 0, offsetZ = 0;
+    const batiments = [];
+    if (pos.altitude > 0) {
+      const lpm = 1 / Math.tan(pos.altitude);
+      offsetX = Math.sin(pos.azimuth) * lpm;
+      offsetZ = Math.cos(pos.azimuth) * lpm;
+      for (const f of map.querySourceFeatures("composite", { sourceLayer: "building", filter: ["==", "extrude", "true"] })) {
+        if (!f.geometry) continue;
+        let h = parseFloat(f.properties.height); if (isNaN(h) || h <= 0) h = 18;
+        const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates]
+          : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : null;
+        if (!polys) continue;
+        for (const rings of polys) if (rings[0]?.length >= 3) batiments.push({ h, ring: rings[0] });
+      }
+    }
+
+    // Récupère tous les cafés des tuiles visibles depuis le cache
+    const vue = map.getBounds();
+    const { ix: ixMin, iz: izMin } = indexTuilePOI(vue.getWest(), vue.getSouth());
+    const { ix: ixMax, iz: izMax } = indexTuilePOI(vue.getEast(), vue.getNorth());
+
+    const features = [];
+    for (let ix = ixMin; ix <= ixMax; ix++) {
+      for (let iz = izMin; iz <= izMax; iz++) {
+        for (const poi of (poiCache.get(`${ix}_${iz}`) || [])) {
+          let auSoleil = pos.altitude > 0;
+          if (pos.altitude > 0) {
+            const { x, z } = gpsVersMetres(poi.lon, poi.lat);
+            for (const bat of batiments) {
+              const t = metresVersGps(x - offsetX * bat.h, z - offsetZ * bat.h);
+              let dedans = false;
+              for (let a = 0, b = bat.ring.length - 1; a < bat.ring.length; b = a++) {
+                const [xa, ya] = bat.ring[a], [xb, yb] = bat.ring[b];
+                if (((ya > t.lat) !== (yb > t.lat)) && t.lon < (xb - xa) * (t.lat - ya) / (yb - ya) + xa) dedans = !dedans;
+              }
+              if (dedans) { auSoleil = false; break; }
+            }
+          }
+          if (seulementAuSoleil && !auSoleil) continue;
+          features.push({
+            type: "Feature",
+            geometry: { type: "Point", coordinates: [poi.lon, poi.lat] },
+            properties: {
+              nom: poi.nom,
+              auSoleil,
+              type: poi.type,
+              emoji: poi.type === "restaurant" ? "🍽" : "☕" // pour la popup HTML uniquement
+            }
+          });
+        }
+      }
+    }
+    map.getSource("poi-lieux").setData({ type: "FeatureCollection", features });
+  }
+
+  function estAuSoleil(lon, lat, date) {
+    const pos = SunCalc.getPosition(date, lat, lon);
+    if (pos.altitude <= 0) return false;
+    const lpm = 1 / Math.tan(pos.altitude);
+    const oX = Math.sin(pos.azimuth) * lpm, oZ = Math.cos(pos.azimuth) * lpm;
+    for (const f of map.querySourceFeatures("composite", { sourceLayer: "building", filter: ["==", "extrude", "true"] })) {
+      if (!f.geometry) continue;
+      let h = parseFloat(f.properties.height); if (isNaN(h) || h <= 0) h = 18;
+      const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates]
+        : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : null;
+      if (!polys) continue;
+      for (const rings of polys) {
+        const ring = rings[0]; if (!ring || ring.length < 3) continue;
+        const { x, z } = gpsVersMetres(lon, lat);
+        const t = metresVersGps(x - oX * h, z - oZ * h);
+        let dedans = false;
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const [xi, yi] = ring[i], [xj, yj] = ring[j];
+          if (((yi > t.lat) !== (yj > t.lat)) && t.lon < (xj - xi) * (t.lat - yi) / (yj - yi) + xi) dedans = !dedans;
+        }
+        if (dedans) return false;
+      }
+    }
+    return true;
+  }
+</script>
+</body>
+</html>
