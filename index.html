@@ -897,6 +897,24 @@
     "https://overpass.kumi.systems/api/interpreter"
   ];
 
+  // ============================================================
+  // fetch() n'a pas de timeout natif : sur une connexion mobile flaky
+  // (4G/5G, wifi public...), une requête peut rester "pending" indéfiniment
+  // sans jamais rejeter la promesse — ce qui bloquait silencieusement le
+  // chargement des cafés sur iPhone alors que le wifi rapide du bureau
+  // masquait le problème. On force un abandon après TIMEOUT_MS.
+  // ============================================================
+  const TIMEOUT_OVERPASS_MS = 9000;
+  async function fetchAvecTimeout(url, options) {
+    const controleur = new AbortController();
+    const idTimeout = setTimeout(() => controleur.abort(), TIMEOUT_OVERPASS_MS);
+    try {
+      return await fetch(url, { ...options, signal: controleur.signal });
+    } finally {
+      clearTimeout(idTimeout);
+    }
+  }
+
   async function chargerPOI() {
     if (typeof map === "undefined") return;
     const vue = map.getBounds();
@@ -944,12 +962,13 @@
 
       let data = null;
       let dernierStatus = null;
+      let derniereErreur = null;
 
       for (let tentative = 0; tentative < 2 && !data; tentative++) {
         if (tentative > 0) await new Promise(r => setTimeout(r, 800));
         for (const url of SERVEURS_OVERPASS) {
           try {
-            const r = await fetch(url, { method: "POST", body: requete });
+            const r = await fetchAvecTimeout(url, { method: "POST", body: requete });
             dernierStatus = r.status;
             if (r.status === 429) {
               // Rate-limit atteint : on impose une pause globale de 3 secondes
@@ -960,7 +979,12 @@
             if (!r.ok) throw new Error(r.status);
             data = await r.json();
             break;
-          } catch (e) { /* on essaie le serveur suivant */ }
+          } catch (e) {
+            derniereErreur = e;
+            // Logué en console pour diagnostic (visible via Safari Web Inspector sur iPhone
+            // branché en USB : Réglages iPhone > Safari > Avancé > Inspecteur Web).
+            console.warn(`Overpass ${url} a échoué pour tuile ${t.cle} :`, e.name === "AbortError" ? "timeout" : e.message || e);
+          }
         }
       }
 
@@ -969,6 +993,7 @@
       if (!data) {
         if (dernierStatus === 429) console.warn(`Overpass rate-limit atteint pour tuile ${t.cle}, réessai plus tard`);
         else if (dernierStatus === 504) console.warn(`Overpass surchargé pour tuile ${t.cle}, réessai plus tard`);
+        else console.warn(`Échec définitif tuile ${t.cle} après 2 tentatives :`, derniereErreur?.message || derniereErreur);
         continue;
       }
 
