@@ -6,10 +6,13 @@
 // sans package.json avec "type": "module", Vercel traite les .js comme CommonJS
 // par défaut, et la syntaxe ES Modules fait échouer le build silencieusement.
 
+// IMPORTANT : overpass.kumi.systems est placé en PREMIER car overpass-api.de a
+// (constaté en pratique) des données incomplètes qui renvoient 0 élément avec un
+// statut 200 — ce qui bloquait tout, la fonction s'arrêtant sur ce faux succès.
 const SERVEURS_OVERPASS = [
-  "https://overpass-api.de/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
-  "https://overpass.osm.ch/api/interpreter"
+  "https://overpass.osm.ch/api/interpreter",
+  "https://overpass-api.de/api/interpreter"
 ];
 
 module.exports = async function handler(req, res) {
@@ -18,20 +21,17 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: "Paramètres manquants (south, west, north, east)" });
   }
 
-  const requete = `[out:json][timeout:8];node["amenity"~"^(cafe|restaurant|bistro)$"](${south},${west},${north},${east});out body;`;
+  const requete = `[out:json][timeout:25];node["amenity"~"^(cafe|restaurant)$"](${south},${west},${north},${east});out body;`;
 
-  // Diagnostic accumulé : si tout échoue, on renvoie le détail pour comprendre pourquoi.
   const diagnostic = [];
+  let derniereReponseVide = null; // on garde une réponse vide valide en dernier recours
 
   for (const url of SERVEURS_OVERPASS) {
     try {
       const controleur = new AbortController();
       const idTimeout = setTimeout(() => controleur.abort(), 9000);
 
-      // IMPORTANT : Overpass attend le corps au format "data=<requête urlencodée>",
-      // avec le Content-Type application/x-www-form-urlencoded. Envoyer la requête
-      // brute sans ça fait que certaines instances renvoient une page d'erreur HTML
-      // (interprétée ensuite comme une réponse vide côté client).
+      // Overpass attend "data=<requête urlencodée>" avec ce Content-Type.
       const r = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -42,21 +42,30 @@ module.exports = async function handler(req, res) {
 
       if (!r.ok) {
         diagnostic.push({ url, status: r.status });
-        continue; // serveur suivant
+        continue;
       }
 
-      // On lit d'abord en texte pour détecter une éventuelle réponse non-JSON
       const texte = await r.text();
       let data;
       try {
         data = JSON.parse(texte);
       } catch (e) {
-        // Réponse non-JSON (page d'erreur HTML par ex.) → on tente le serveur suivant
         diagnostic.push({ url, status: r.status, erreur: "réponse non-JSON", extrait: texte.slice(0, 120) });
         continue;
       }
 
-      // Succès : cache 1h côté CDN Vercel (les cafés ne bougent pas d'une minute à l'autre)
+      const nb = Array.isArray(data.elements) ? data.elements.length : 0;
+
+      if (nb === 0) {
+        // Réponse valide mais vide : peut-être une instance aux données cassées.
+        // On la mémorise et on tente le serveur suivant ; si tous sont vides,
+        // on renverra cette réponse (la zone est peut-être réellement sans café).
+        diagnostic.push({ url, status: 200, elements: 0 });
+        derniereReponseVide = data;
+        continue;
+      }
+
+      // Succès avec des données : cache 1h côté CDN Vercel
       res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
       return res.status(200).json(data);
 
@@ -65,6 +74,14 @@ module.exports = async function handler(req, res) {
     }
   }
 
-  // Tous les serveurs ont échoué → on renvoie le diagnostic complet pour déboguer
+  // Aucun serveur n'a renvoyé de données non vides.
+  // Si au moins un a répondu correctement (mais vide), on renvoie cette réponse vide :
+  // la zone est probablement réellement sans café.
+  if (derniereReponseVide) {
+    res.setHeader("Cache-Control", "s-maxage=600"); // cache plus court pour les zones vides
+    return res.status(200).json(derniereReponseVide);
+  }
+
+  // Tous les serveurs ont vraiment échoué
   return res.status(502).json({ error: "Tous les serveurs Overpass ont échoué", diagnostic });
 };
