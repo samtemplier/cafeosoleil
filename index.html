@@ -891,69 +891,11 @@
     return { ix: Math.floor(lon / TAILLE_TUILE_POI), iz: Math.floor(lat / TAILLE_TUILE_POI) };
   }
 
-  // Serveurs Overpass — on essaie le premier, puis un miroir si échec
-  const SERVEURS_OVERPASS = [
-    "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter"
-  ];
-
-  // ============================================================
-  // fetch() n'a pas de timeout natif : sur une connexion mobile flaky
-  // (4G/5G, wifi public...), une requête peut rester "pending" indéfiniment
-  // sans jamais rejeter la promesse — ce qui bloquait silencieusement le
-  // chargement des cafés sur iPhone alors que le wifi rapide du bureau
-  // masquait le problème. On force un abandon après TIMEOUT_MS.
-  // ============================================================
-  const TIMEOUT_OVERPASS_MS = 9000;
-  async function fetchAvecTimeout(url, options) {
-    const controleur = new AbortController();
-    const idTimeout = setTimeout(() => controleur.abort(), TIMEOUT_OVERPASS_MS);
-    try {
-      return await fetch(url, { ...options, signal: controleur.signal });
-    } finally {
-      clearTimeout(idTimeout);
-    }
-  }
-
-  // ============================================================
-  // Chargement d'une tuile de cafés/restaurants.
-  // 1) Essaie d'abord le proxy serveur /api/cafes (même domaine → pas de CORS,
-  //    et contourne le blocage anti-abus qu'Overpass applique parfois aux appels
-  //    faits directement depuis le navigateur sur des domaines *.vercel.app).
-  // 2) Si le proxy n'existe pas (404 → hébergement statique sans fonctions
-  //    serverless, ex. Netlify Drop), on retombe sur l'appel direct à Overpass.
-  // ============================================================
-  async function chargerTuileCafes(sud, ouest, nord, est, cleTuile) {
-    try {
-      const params = new URLSearchParams({ south: sud, west: ouest, north: nord, east: est });
-      const r = await fetchAvecTimeout(`/api/cafes?${params}`, { method: "GET" });
-      if (r.status !== 404) {
-        if (r.status === 429) { pauseJusqua = Date.now() + 3000; throw new Error("429"); }
-        if (!r.ok) throw new Error(String(r.status));
-        return await r.json();
-      }
-      // 404 : pas de fonction serverless déployée sur ce domaine → repli ci-dessous
-    } catch (e) {
-      if (e.message !== "404") {
-        console.warn(`Proxy /api/cafes indisponible pour tuile ${cleTuile} :`, e.name === "AbortError" ? "timeout" : e.message || e);
-      }
-    }
-
-    const requete = `[out:json][timeout:8];node["amenity"~"^(cafe|restaurant|bistro)$"](${sud},${ouest},${nord},${est});out body;`;
-    for (const url of SERVEURS_OVERPASS) {
-      try {
-        const r = await fetchAvecTimeout(url, { method: "POST", body: requete });
-        if (r.status === 429) { pauseJusqua = Date.now() + 3000; throw new Error("429"); }
-        if (!r.ok) throw new Error(String(r.status));
-        return await r.json();
-      } catch (e) {
-        // Logué en console pour diagnostic (visible via Safari Web Inspector sur iPhone
-        // branché en USB : Réglages iPhone > Safari > Avancé > Inspecteur Web).
-        console.warn(`Overpass ${url} a échoué pour tuile ${cleTuile} :`, e.name === "AbortError" ? "timeout" : e.message || e);
-      }
-    }
-    return null;
-  }
+  // On appelle notre propre fonction serverless Vercel (/api/cafes) au lieu
+  // d'Overpass directement : ça contourne le blocage CORS (même origine que le site),
+  // et c'est le serveur Vercel qui parle à Overpass en coulisses.
+  // La fonction attend les coordonnées en paramètres GET (south, west, north, east).
+  const URL_API_CAFES = "/api/cafes";
 
   async function chargerPOI() {
     if (typeof map === "undefined") return;
@@ -998,15 +940,34 @@
       const ouest = t.ix * TAILLE_TUILE_POI;
       const est   = (t.ix + 1) * TAILLE_TUILE_POI;
 
+      // On appelle notre endpoint /api/cafes avec les coordonnées de la tuile en paramètres.
+      // C'est la fonction serverless qui construit la requête Overpass et la relaie.
+      const urlAvecParams = `${URL_API_CAFES}?south=${sud}&west=${ouest}&north=${nord}&east=${est}`;
+
       let data = null;
-      try {
-        data = await chargerTuileCafes(sud, ouest, nord, est, t.cle);
-      } catch (e) { /* déjà logué dans chargerTuileCafes */ }
+      let dernierStatus = null;
+
+      for (let tentative = 0; tentative < 2 && !data; tentative++) {
+        if (tentative > 0) await new Promise(r => setTimeout(r, 800));
+        try {
+          const r = await fetch(urlAvecParams);
+          dernierStatus = r.status;
+          if (r.status === 429) {
+            // Rate-limit atteint : on impose une pause globale de 3 secondes
+            // pour toutes les prochaines requêtes (pas juste celle-ci).
+            pauseJusqua = Date.now() + 3000;
+            throw new Error(429);
+          }
+          if (!r.ok) throw new Error(r.status);
+          data = await r.json();
+        } catch (e) { /* on retente après la pause */ }
+      }
 
       tuilesEnCours.delete(t.cle);
 
       if (!data) {
-        console.warn(`Échec définitif tuile ${t.cle} (proxy + repli direct)`);
+        if (dernierStatus === 429) console.warn(`Overpass rate-limit atteint pour tuile ${t.cle}, réessai plus tard`);
+        else if (dernierStatus === 504) console.warn(`Overpass surchargé pour tuile ${t.cle}, réessai plus tard`);
         continue;
       }
 
