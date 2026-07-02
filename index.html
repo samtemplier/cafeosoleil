@@ -235,6 +235,31 @@
     height: 14px;
     cursor: pointer;
   }
+  #btn-chercher-zone {
+    display: block;
+    width: 100%;
+    margin-top: 9px;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 8px;
+    background: #e07a3f;
+    color: white;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  #btn-chercher-zone:hover:not(:disabled) { opacity: 0.85; }
+  #btn-chercher-zone:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+  }
+  #statut-recherche-poi {
+    margin-top: 6px;
+    font-size: 11.5px;
+    color: #888;
+  }
+  #statut-recherche-poi.avertissement { color: #a05a2c; }
 
   #astuce-3d {
     position: absolute;
@@ -284,6 +309,8 @@
       <label id="filtre-soleil-uniquement">
         <input type="checkbox" id="checkbox-soleil"> Uniquement au soleil ☀️
       </label>
+      <button id="btn-chercher-zone">🔍 Chercher les cafés dans cette zone</button>
+      <div id="statut-recherche-poi"></div>
     </div>
   </div>
   <!-- Résumé compact affiché quand le panneau est replié (mobile essentiellement) -->
@@ -671,13 +698,14 @@
       delaiRecalcul = setTimeout(() => {
         surTuilesPretes();
         rafraichirPOI();
+        majEtatBoutonZone();
       }, 150);
     });
     inputDate.addEventListener("input", () => { rafraichirAffichage(); rafraichirPOI(); });
     sliderHeure.addEventListener("input", () => { rafraichirAffichage(); rafraichirPOI(); });
 
     rafraichirAffichage();
-    map.once("idle", () => rafraichirPOI()); // affiche tous les POI dès que la carte est prête
+    map.once("idle", () => { rafraichirPOI(); majEtatBoutonZone(); }); // affiche les POI déjà en cache dès que la carte est prête
 
     // ----------------------------------------------------------
     // Clic sur la carte → popup avec frise d'ensoleillement sur la journée
@@ -842,21 +870,21 @@
   // Logique POI Cafés (via Overpass / OpenStreetMap)
   // ============================================================
   let seulementAuSoleil = false;
-  let delaiPOI = null;
 
-  // Cache mémoire des cafés par tuile (~800m de côté).
+  // Cache mémoire des cafés par tuile (~800m de côté). Le tuilage sert uniquement
+  // au stockage/affichage (poiCache + localStorage) ; la recherche elle-même se fait
+  // en un seul appel réseau sur la zone visible, déclenché par le bouton "Chercher
+  // dans cette zone" plutôt qu'automatiquement au déplacement de la carte.
   const poiCache = new Map();
 
-  // Ensemble des tuiles dont la requête est en cours (pas encore terminée).
-  // Distincte de poiCache : une tuile est "en cours" temporairement pour éviter les
-  // requêtes concurrentes, puis retirée. Contrairement à poiCache, une tuile "en cours"
-  // qui échoue est retirée et permettra un nouvel essai — pas de tuile morte bloquée.
-  const tuilesEnCours = new Set();
-
-  // Timestamp jusqu'auquel on doit attendre avant de refaire une requête (rate-limit 429).
-  let pauseJusqua = 0;
   const TAILLE_TUILE_POI = 0.008;
   const CLE_STORAGE = "cafesCache_v3";
+
+  // Surface max (km²) qu'on autorise à rechercher en un coup : au-delà, une requête
+  // Overpass sur toute la zone risque de dépasser le timeout serveur (9s) et de ramer
+  // à l'affichage. On demande à l'utilisateur de zoomer plutôt que de laisser partir
+  // une requête qui va probablement échouer ou traîner.
+  const AIRE_MAX_KM2 = 9;
 
   // Chargement du cache persistant depuis localStorage au démarrage : les tuiles
   // déjà chargées lors des sessions précédentes ne seront pas re-requêtées.
@@ -897,102 +925,91 @@
   // La fonction attend les coordonnées en paramètres GET (south, west, north, east).
   const URL_API_CAFES = "/api/cafes";
 
-  async function chargerPOI() {
-    if (typeof map === "undefined") return;
+  // Surface (km²) actuellement visible à l'écran, via la même conversion degrés→mètres
+  // que le reste de l'app (gpsVersMetres, définie plus haut).
+  function aireVisibleKm2() {
     const vue = map.getBounds();
-    const { ix: ixMin, iz: izMin } = indexTuilePOI(vue.getWest(), vue.getSouth());
-    const { ix: ixMax, iz: izMax } = indexTuilePOI(vue.getEast(), vue.getNorth());
+    const min = gpsVersMetres(vue.getWest(), vue.getSouth());
+    const max = gpsVersMetres(vue.getEast(), vue.getNorth());
+    return (Math.abs(max.x - min.x) / 1000) * (Math.abs(max.z - min.z) / 1000);
+  }
 
-    // Centre de la vue : sert à trier les tuiles par ordre de priorité
-    const centre = map.getCenter();
-    const { ix: ixCentre, iz: izCentre } = indexTuilePOI(centre.lng, centre.lat);
+  // Active/désactive le bouton de recherche selon la taille de la zone visible,
+  // et affiche un message d'invite tant qu'aucune recherche n'a été lancée sur cette zone.
+  function majEtatBoutonZone() {
+    const btn = document.getElementById("btn-chercher-zone");
+    const statut = document.getElementById("statut-recherche-poi");
+    if (!btn || typeof map === "undefined") return;
+    if (aireVisibleKm2() > AIRE_MAX_KM2) {
+      btn.disabled = true;
+      statut.textContent = "Zone trop grande — zoomez pour activer la recherche.";
+      statut.classList.add("avertissement");
+    } else {
+      btn.disabled = false;
+      statut.classList.remove("avertissement");
+      if (!statut.dataset.resultat) statut.textContent = "";
+    }
+  }
 
-    // Tuiles à charger : ni déjà en cache, ni en cours de chargement
-    const manquantes = [];
-    for (let ix = ixMin; ix <= ixMax; ix++)
-      for (let iz = izMin; iz <= izMax; iz++) {
-        const cle = `${ix}_${iz}`;
-        if (!poiCache.has(cle) && !tuilesEnCours.has(cle)) manquantes.push({ ix, iz, cle });
-      }
+  // Recherche en un seul appel réseau sur la zone actuellement visible (déclenchée
+  // par le bouton "Chercher dans cette zone"), plutôt qu'un chargement automatique
+  // tuile par tuile à chaque déplacement de la carte.
+  async function chercherZoneVisible() {
+    if (typeof map === "undefined") return;
+    if (aireVisibleKm2() > AIRE_MAX_KM2) return; // garde-fou (le bouton est normalement déjà désactivé)
 
-    if (manquantes.length === 0) return;
+    const btn = document.getElementById("btn-chercher-zone");
+    const statut = document.getElementById("statut-recherche-poi");
+    const vue = map.getBounds();
+    const south = vue.getSouth(), west = vue.getWest(), north = vue.getNorth(), east = vue.getEast();
 
-    // Tri : tuiles les plus proches du centre chargées en premier
-    manquantes.sort((a, b) => {
-      const da = (a.ix - ixCentre) ** 2 + (a.iz - izCentre) ** 2;
-      const db = (b.ix - ixCentre) ** 2 + (b.iz - izCentre) ** 2;
-      return da - db;
-    });
+    const texteInitial = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Recherche…";
+    statut.classList.remove("avertissement");
+    statut.textContent = "";
+    delete statut.dataset.resultat;
 
-    // Marque les tuiles comme "en cours" (pas comme "chargées") pour éviter les requêtes
-    // concurrentes, MAIS permettre un nouvel essai automatique si la requête échoue.
-    manquantes.forEach(t => tuilesEnCours.add(t.cle));
+    try {
+      const r = await fetch(`${URL_API_CAFES}?south=${south}&west=${west}&north=${north}&east=${east}`);
+      if (!r.ok) throw new Error(r.status);
+      const data = await r.json();
 
-    // ---- Chargement tuile par tuile, avec priorité au centre ----
-    for (const t of manquantes) {
-      // Si on est en pause 429 (rate-limit Overpass), on attend que ça passe
-      if (pauseJusqua > Date.now()) {
-        await new Promise(r => setTimeout(r, pauseJusqua - Date.now()));
-      }
+      // Marque comme "chargées" (même vides) toutes les tuiles couvertes par cette
+      // recherche, pour que la zone reste affichée en cache lors d'un prochain déplacement.
+      const { ix: ixMin, iz: izMin } = indexTuilePOI(west, south);
+      const { ix: ixMax, iz: izMax } = indexTuilePOI(east, north);
+      for (let ix = ixMin; ix <= ixMax; ix++)
+        for (let iz = izMin; iz <= izMax; iz++)
+          poiCache.set(`${ix}_${iz}`, []);
 
-      const sud   = t.iz * TAILLE_TUILE_POI;
-      const nord  = (t.iz + 1) * TAILLE_TUILE_POI;
-      const ouest = t.ix * TAILLE_TUILE_POI;
-      const est   = (t.ix + 1) * TAILLE_TUILE_POI;
-
-      // On appelle notre endpoint /api/cafes avec les coordonnées de la tuile en paramètres.
-      // C'est la fonction serverless qui construit la requête Overpass et la relaie.
-      const urlAvecParams = `${URL_API_CAFES}?south=${sud}&west=${ouest}&north=${nord}&east=${est}`;
-
-      let data = null;
-      let dernierStatus = null;
-
-      for (let tentative = 0; tentative < 2 && !data; tentative++) {
-        if (tentative > 0) await new Promise(r => setTimeout(r, 800));
-        try {
-          const r = await fetch(urlAvecParams);
-          dernierStatus = r.status;
-          if (r.status === 429) {
-            // Rate-limit atteint : on impose une pause globale de 3 secondes
-            // pour toutes les prochaines requêtes (pas juste celle-ci).
-            pauseJusqua = Date.now() + 3000;
-            throw new Error(429);
-          }
-          if (!r.ok) throw new Error(r.status);
-          data = await r.json();
-        } catch (e) { /* on retente après la pause */ }
-      }
-
-      tuilesEnCours.delete(t.cle);
-
-      if (!data) {
-        if (dernierStatus === 429) console.warn(`Overpass rate-limit atteint pour tuile ${t.cle}, réessai plus tard`);
-        else if (dernierStatus === 504) console.warn(`Overpass surchargé pour tuile ${t.cle}, réessai plus tard`);
-        continue;
-      }
-
-      const liste = [];
-      data.elements.forEach(el => {
+      (data.elements || []).forEach(el => {
         if (typeof el.lat !== "number" || typeof el.lon !== "number" || !el.tags) return;
         const type = el.tags.amenity;
-        liste.push({
+        const { ix, iz } = indexTuilePOI(el.lon, el.lat);
+        poiCache.get(`${ix}_${iz}`).push({
           lon: el.lon,
           lat: el.lat,
           nom: el.tags.name || (type === "restaurant" ? "Restaurant" : "Café"),
           type
         });
       });
-      poiCache.set(t.cle, liste);
 
-      // Petite pause entre chaque requête pour ne pas déclencher le rate-limit Overpass.
-      // 200ms entre requêtes = 5 requêtes/seconde max, bien en dessous des limites.
-      await new Promise(r => setTimeout(r, 200));
-
-      // Rafraîchit l'affichage dès qu'une tuile est prête (pas d'attente des autres)
-      afficherPOI();
       sauvegarderCache();
+      afficherPOI();
+      statut.textContent = `${(data.elements || []).length} lieu(x) trouvé(s).`;
+      statut.dataset.resultat = "1";
+    } catch (e) {
+      statut.textContent = "Échec de la recherche, réessayez.";
+      statut.classList.add("avertissement");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = texteInitial;
+      majEtatBoutonZone();
     }
   }
+
+  document.getElementById("btn-chercher-zone").addEventListener("click", chercherZoneVisible);
 
   document.getElementById("checkbox-soleil").addEventListener("change", (e) => {
     seulementAuSoleil = e.target.checked;
@@ -1034,16 +1051,11 @@
     document.getElementById("slider-heure").addEventListener("input", majResume);
   })();
 
+  // Réaffiche les POI déjà en cache (aucune requête réseau) : le chargement de
+  // nouvelles données se fait uniquement via le bouton "Chercher dans cette zone"
+  // (voir chercherZoneVisible), pas automatiquement au déplacement de la carte.
   function rafraichirPOI() {
-    if (typeof map === "undefined" || !map.getSource("poi-lieux")) return;
-    // Affichage immédiat avec ce qu'on a déjà en cache (pas d'attente réseau visible),
-    // puis chargement asynchrone des tuiles manquantes en arrière-plan.
     afficherPOI();
-    clearTimeout(delaiPOI);
-    delaiPOI = setTimeout(async () => {
-      await chargerPOI();
-      afficherPOI();
-    }, 300);
   }
 
   function afficherPOI() {
