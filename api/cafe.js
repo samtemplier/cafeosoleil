@@ -3,6 +3,11 @@
 // qui parle à Overpass en coulisses. Ça évite le blocage 406 qu'overpass-api.de
 // applique parfois aux appels faits directement depuis le navigateur sur des
 // domaines d'hébergement génériques (*.vercel.app, *.netlify.app...).
+//
+// Syntaxe CommonJS (module.exports) volontairement, pas "export default" :
+// sans package.json avec "type": "module", Vercel traite les .js comme CommonJS
+// par défaut, et la syntaxe ES Modules fait échouer le build silencieusement
+// (la fonction n'apparaît alors même pas dans l'onglet "Functions").
 
 const SERVEURS_OVERPASS = [
   "https://overpass-api.de/api/interpreter",
@@ -10,7 +15,7 @@ const SERVEURS_OVERPASS = [
   "https://overpass.osm.ch/api/interpreter"
 ];
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   const { south, west, north, east } = req.query;
 
   if (!south || !west || !north || !east) {
