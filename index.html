@@ -71,10 +71,22 @@
   #panneau-controle.replie #resume-compact { display: flex; }
   #panneau-controle.replie { padding: 8px 12px; min-width: 0; }
 
-  /* Sur mobile (écran étroit), le panneau est replié par défaut et prend moins de place */
-  @media (max-width: 600px) {
-    #panneau-controle { max-width: calc(100vw - 24px); }
-    #panneau-controle:not(.replie) #panneau-contenu { max-width: 100%; }
+  /* Sur mobile (écran étroit OU bas, ex. téléphone en paysage), le panneau est replié
+     par défaut et prend moins de place. Une fois déplié, on limite sa hauteur (au lieu
+     de laisser le contenu pousser en absolute et recouvrir toute la carte) et on le
+     rend défilable à l'intérieur. */
+  @media (max-width: 600px), (max-height: 500px) {
+    #panneau-controle { max-width: calc(100vw - 24px); padding: 10px 12px; font-size: 12.5px; }
+    #panneau-controle:not(.replie) #panneau-contenu {
+      max-width: 100%;
+      max-height: calc(100dvh - 90px);
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      padding-right: 2px; /* évite que la scrollbar chevauche le contenu */
+    }
+    #panneau-controle #section-poi { margin-top: 7px; padding-top: 7px; }
+    #panneau-controle .mapboxgl-ctrl-geocoder,
+    #panneau-controle input[type="date"] { margin-bottom: 7px; }
   }
   #panneau-controle label {
     display: block;
@@ -1027,7 +1039,7 @@
     const resumeDate = document.getElementById("resume-date");
 
     // Sur mobile (écran ≤ 600px), le panneau est replié par défaut
-    if (window.innerWidth <= 600) panneau.classList.add("replie");
+    if (window.innerWidth <= 600 || window.innerHeight <= 500) panneau.classList.add("replie");
     icone.textContent = panneau.classList.contains("replie") ? "+" : "−";
 
     btnToggle.addEventListener("click", () => {
