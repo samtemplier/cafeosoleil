@@ -6,14 +6,21 @@
 // sans package.json avec "type": "module", Vercel traite les .js comme CommonJS
 // par défaut, et la syntaxe ES Modules fait échouer le build silencieusement.
 
-// IMPORTANT : overpass.kumi.systems est placé en PREMIER car overpass-api.de a
-// (constaté en pratique) des données incomplètes qui renvoient 0 élément avec un
-// statut 200 — ce qui bloquait tout, la fonction s'arrêtant sur ce faux succès.
+// IMPORTANT : overpass.kumi.systems (injoignable) et overpass.osm.ch (renvoie
+// systématiquement 200 avec 0 élément, y compris pour des requêtes sur Paris/Londres/NY —
+// une instance cassée dont le faux succès court-circuitait le fallback) ont été retirés.
 const SERVEURS_OVERPASS = [
-  "https://overpass.kumi.systems/api/interpreter",
-  "https://overpass.osm.ch/api/interpreter",
-  "https://overpass-api.de/api/interpreter"
+  "https://overpass.openstreetmap.fr/api/interpreter",
+  "https://overpass-api.de/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
 ];
+
+// overpass-api.de (et les instances qui partagent son code) renvoient 406 Not Acceptable
+// aux requêtes sans User-Agent explicite.
+const EN_TETES = {
+  "Content-Type": "application/x-www-form-urlencoded",
+  "User-Agent": "cafeosoleil/1.0 (+https://cafeosoleil.vercel.app)"
+};
 
 module.exports = async function handler(req, res) {
   const { south, west, north, east } = req.query;
@@ -34,7 +41,7 @@ module.exports = async function handler(req, res) {
       // Overpass attend "data=<requête urlencodée>" avec ce Content-Type.
       const r = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        headers: EN_TETES,
         body: "data=" + encodeURIComponent(requete),
         signal: controleur.signal
       });
