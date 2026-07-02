@@ -1,2 +1,0 @@
-# cafeosoleil
-Ptit café ?
