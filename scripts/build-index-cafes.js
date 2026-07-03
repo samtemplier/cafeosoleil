@@ -18,7 +18,7 @@ const SERVEURS_OVERPASS = [
 
 const EN_TETES = {
   "Content-Type": "application/x-www-form-urlencoded",
-  "User-Agent": "cafeosoleil-build-index/1.0 (+https://cafeosoleil.vercel.app)"
+  "User-Agent": "plein-sud-build-index/1.0 (+https://cafeosoleil.vercel.app)"
 };
 
 // Grandes villes françaises couvertes (centre approximatif + rayon en degrés).

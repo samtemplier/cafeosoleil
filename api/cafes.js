@@ -19,7 +19,7 @@ const SERVEURS_OVERPASS = [
 // aux requêtes sans User-Agent explicite.
 const EN_TETES = {
   "Content-Type": "application/x-www-form-urlencoded",
-  "User-Agent": "cafeosoleil/1.0 (+https://cafeosoleil.vercel.app)"
+  "User-Agent": "plein-sud/1.0 (+https://cafeosoleil.vercel.app)"
 };
 
 // Échappe une saisie utilisateur pour l'utiliser comme sous-chaîne littérale dans le
