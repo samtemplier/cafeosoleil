@@ -404,6 +404,14 @@
 
   map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), "top-right");
 
+  // Bouton de géolocalisation (façon Google Maps) : centre la carte sur la position
+  // exacte de l'utilisateur au clic, avec cercle de précision et suivi en direct.
+  map.addControl(new mapboxgl.GeolocateControl({
+    positionOptions: { enableHighAccuracy: true },
+    trackUserLocation: true,
+    showUserHeading: true
+  }), "top-right");
+
   // ============================================================
   // Garde-fou : on plafonne la zone de calcul à un rayon fixe autour
   // du centre pour éviter un nombre démesuré de bâtiments à traiter.
@@ -706,6 +714,10 @@
     inputDate.value = maintenant.toISOString().split("T")[0];
     const minutesActuelles = maintenant.getHours() * 60 + maintenant.getMinutes();
     sliderHeure.value = minutesActuelles;
+    // Un .value réglé par JS ne déclenche pas "input" tout seul : sans ce dispatch, le
+    // résumé compact (visible par défaut sur mobile, panneau replié) reste bloqué sur le
+    // 12:00 codé en dur dans le HTML au lieu de refléter l'heure actuelle.
+    sliderHeure.dispatchEvent(new Event("input"));
 
     // Convertit la valeur du slider (minutes depuis minuit) en objet Date
     function dateChoisie() {
