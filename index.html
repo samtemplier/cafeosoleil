@@ -13,6 +13,11 @@
 <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.0/mapbox-gl-geocoder.min.js"></script>
 <link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.0/mapbox-gl-geocoder.css" rel="stylesheet">
 
+<!-- Recherche floue (typos, variantes d'orthographe) dans l'index local des cafés,
+     voir data/cafes-index.json et rechercheDansIndexLocal plus bas : remplace les
+     appels réseau à Overpass à chaque frappe par une recherche 100% en mémoire. -->
+<script src="https://cdn.jsdelivr.net/npm/fuse.js@7/dist/fuse.min.js"></script>
+
 <style>
   body { margin: 0; padding: 0; overscroll-behavior-y: none; }
 
@@ -1131,61 +1136,71 @@
 
   document.getElementById("btn-chercher-zone").addEventListener("click", chercherZoneVisible);
 
-  // Complète la barre d'adresse unique avec les cafés/restaurants OSM correspondant au
-  // nom tapé (ex. "Café Roma"), en plus des adresses/lieux que Mapbox trouve déjà tout
-  // seul (villes, rues, monuments comme "Tour Montparnasse" — pas touché ici). Branché
-  // sur le geocoder via son option "externalGeocoder" (voir plus bas) : ses résultats
-  // sont fusionnés dans la même liste déroulante, une seule barre au lieu de deux.
+  // Complète la barre d'adresse unique avec les cafés/restaurants correspondant au nom
+  // tapé (ex. "Café Roma"), en plus des adresses/lieux que Mapbox trouve déjà tout seul
+  // (villes, rues, monuments comme "Tour Montparnasse" — pas touché ici). Branché sur
+  // le geocoder via son option "externalGeocoder" (voir plus bas) : ses résultats sont
+  // fusionnés dans la même liste déroulante, une seule barre au lieu de deux.
   //
-  // La zone de recherche reste centrée sur la vue actuelle de la carte (pas la France
-  // entière) : les miroirs Overpass publics sont trop lents/instables sur de grandes
-  // zones même avec un filtre nom (testé : une requête sur toute la France ou même sur
-  // ~100km échoue systématiquement en timeout). "café roma" retrouve donc un café près
-  // d'ici ; pour un café dans une autre ville, chercher d'abord cette ville (déjà
-  // rapide et fiable via Mapbox), puis chercher le nom du café une fois la carte là-bas.
-  const RAYON_RECHERCHE_NOM_DEG = 0.15; // ~15-17 km, calibré pour rester fiable
-  // Le geocoder attend la résolution complète d'externalGeocoder avant d'afficher QUOI
-  // QUE CE SOIT — y compris ses propres résultats Mapbox, normalement quasi instantanés.
-  // Sans plafond, une requête Overpass lente aurait donc aussi ralenti les adresses.
-  // On borne donc explicitement le temps que cette fonction peut prendre : passé ce délai,
-  // on renvoie une liste vide (les cafés OSM manqueront cette frappe, mais Mapbox reste
-  // réactif), plutôt que de laisser Overpass dicter la latence de toute la recherche.
-  const DELAI_MAX_RECHERCHE_OSM_MS = 2500;
+  // Contrairement à la version précédente (qui interrogeait Overpass en direct à chaque
+  // frappe — lent et bridé par les miroirs publics gratuits), la recherche se fait ici
+  // 100% en mémoire sur un index pré-construit (data/cafes-index.json, ~35 000 lieux
+  // dans les 24 plus grandes villes françaises, voir scripts/build-index-cafes.js) via
+  // Fuse.js pour la tolérance aux fautes/variantes d'orthographe (ex. "café" ≈ "caffè").
+  // Aucun aller-retour réseau après le chargement initial de l'index : c'est ce qui
+  // donne la réactivité "app native" demandée, au prix d'une couverture limitée à ces
+  // villes plutôt que la France entière (à étendre en relançant le script au besoin).
+  let indexCafesPromesse = null;
+  let indexFuse = null;
+  function chargerIndexCafes() {
+    if (!indexCafesPromesse) {
+      indexCafesPromesse = fetch("data/cafes-index.json")
+        .then(r => r.ok ? r.json() : [])
+        .then(donnees => {
+          indexFuse = new Fuse(donnees, {
+            keys: ["n"],
+            threshold: 0.35, // tolère les fautes/variantes (café/caffè) sans devenir trop permissif
+            ignoreLocation: true,
+            includeScore: true
+          });
+          return donnees;
+        })
+        .catch(() => { indexFuse = null; return []; });
+    }
+    return indexCafesPromesse;
+  }
+  chargerIndexCafes(); // démarre le chargement dès l'ouverture de la page, avant la première recherche
+
   async function rechercheOsmPourGeocoder(requete) {
     const nom = requete.trim();
     if (nom.length < 3) return [];
+    await chargerIndexCafes();
+    if (!indexFuse) return [];
+
     const centre = map.getCenter();
-    const south = centre.lat - RAYON_RECHERCHE_NOM_DEG, north = centre.lat + RAYON_RECHERCHE_NOM_DEG;
-    const west = centre.lng - RAYON_RECHERCHE_NOM_DEG, east = centre.lng + RAYON_RECHERCHE_NOM_DEG;
-    const controleur = new AbortController();
-    const idTimeout = setTimeout(() => controleur.abort(), DELAI_MAX_RECHERCHE_OSM_MS);
-    try {
-      const r = await fetch(`${URL_API_CAFES}?south=${south}&west=${west}&north=${north}&east=${east}&nom=${encodeURIComponent(nom)}`, { signal: controleur.signal });
-      if (!r.ok) return [];
-      const data = await r.json();
-      return (data.elements || [])
-        .filter(el => typeof el.lat === "number" && typeof el.lon === "number" && el.tags?.name)
-        .slice(0, 3) // laisse de la place aux résultats Mapbox dans le quota total (voir "limit" du geocoder)
-        .map(el => {
-          const type = el.tags.amenity === "restaurant" ? "restaurant" : "café";
-          // La ville n'est pas toujours taguée dans OSM (souvent absente pour Paris,
-          // par ex.) : on prend ce qu'on a de mieux, sans appel réseau supplémentaire.
-          const lieu = el.tags["addr:city"] || el.tags["contact:city"] || el.tags["addr:postcode"];
-          return {
-            type: "Feature",
-            place_name: lieu ? `${el.tags.name} — ${lieu} (${type})` : `${el.tags.name} (${type})`,
-            text: el.tags.name,
-            center: [el.lon, el.lat],
-            place_type: ["poi"],
-            geometry: { type: "Point", coordinates: [el.lon, el.lat] },
-            properties: { osmCafe: true, lon: el.lon, lat: el.lat, nom: el.tags.name, type: el.tags.amenity }
-          };
-        });
-    } catch (e) {
-      return []; // échec réseau ou délai dépassé (AbortError) : dégrade proprement, pas d'erreur visible
-    } finally {
-      clearTimeout(idTimeout);
-    }
+    return indexFuse.search(nom, { limit: 15 })
+      // Fuse classe par pertinence textuelle seule ; parmi des scores proches, on
+      // préfère les lieux près de la carte actuelle (comportement attendu : "près de moi").
+      .map(({ item, score }) => {
+        const { x, z } = gpsVersMetres(item.lo, item.la);
+        const { x: xc, z: zc } = gpsVersMetres(centre.lng, centre.lat);
+        const distanceKm = Math.hypot(x - xc, z - zc) / 1000;
+        return { item, score, distanceKm };
+      })
+      .sort((a, b) => (a.score + a.distanceKm / 500) - (b.score + b.distanceKm / 500))
+      .slice(0, 3) // laisse de la place aux résultats Mapbox dans le quota total (voir "limit" du geocoder)
+      .map(({ item }) => {
+        const type = item.t === "restaurant" ? "restaurant" : "café";
+        return {
+          type: "Feature",
+          place_name: `${item.n} — ${item.v} (${type})`,
+          text: item.n,
+          center: [item.lo, item.la],
+          place_type: ["poi"],
+          geometry: { type: "Point", coordinates: [item.lo, item.la] },
+          properties: { osmCafe: true, lon: item.lo, lat: item.la, nom: item.n, type: item.t }
+        };
+      });
   }
 
   // Quand le résultat choisi dans la barre est un de nos cafés OSM (et non une adresse
