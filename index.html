@@ -14,7 +14,7 @@
 <link href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-geocoder/v5.0.0/mapbox-gl-geocoder.css" rel="stylesheet">
 
 <style>
-  body { margin: 0; padding: 0; }
+  body { margin: 0; padding: 0; overscroll-behavior-y: none; }
 
   #map {
     position: absolute;
@@ -104,6 +104,7 @@
       height: 24px;
       position: relative;
       cursor: pointer;
+      touch-action: none; /* empêche Safari iOS de traiter le glissement comme un scroll/rebond de page */
     }
     #poignee-panneau::after {
       content: "";
@@ -136,6 +137,7 @@
       justify-content: center;
       padding: 2px 0;
       transition: opacity 0.2s ease;
+      touch-action: none;
     }
     #panneau-controle.replie #resume-compact { opacity: 1; pointer-events: auto; }
     #panneau-controle:not(.replie) #resume-compact { opacity: 0; pointer-events: none; }
@@ -1204,12 +1206,16 @@
 
       element.addEventListener("touchmove", (e) => {
         if (!glissement) return;
+        // preventDefault ici est indispensable : sans lui, Safari iOS interprète le
+        // glissement vertical comme un geste natif de la page (rebond/"tirer pour
+        // rafraîchir") et prend la main à la place de notre propre animation.
+        e.preventDefault();
         const deltaY = e.touches[0].clientY - glissement.departY; // positif = doigt vers le bas
         let h = glissement.hInitiale - deltaY; // doigt vers le haut => hauteur augmente
         h = Math.min(glissement.hD, Math.max(glissement.hR, h));
         feuille.style.height = h + "px";
         resumeCompact.style.opacity = String(1 - progression(h, glissement.hR, glissement.hD));
-      }, { passive: true });
+      }, { passive: false });
 
       element.addEventListener("touchend", (e) => {
         if (!glissement) return;
