@@ -22,13 +22,26 @@ const EN_TETES = {
   "User-Agent": "cafeosoleil/1.0 (+https://cafeosoleil.vercel.app)"
 };
 
+// Échappe une saisie utilisateur pour l'utiliser comme sous-chaîne littérale dans le
+// filtre regex Overpass ["name"~"..."] : d'abord les caractères spéciaux regex (pour
+// que la recherche reste une correspondance de texte simple, pas une regex arbitraire),
+// puis les guillemets/antislashs pour l'insertion dans la chaîne Overpass QL.
+function echapperNomPourOverpass(nom) {
+  const sansMetacaracteres = nom.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return sansMetacaracteres.replace(/"/g, '\\"');
+}
+
 module.exports = async function handler(req, res) {
-  const { south, west, north, east } = req.query;
+  const { south, west, north, east, nom } = req.query;
   if (!south || !west || !north || !east) {
     return res.status(400).json({ error: "Paramètres manquants (south, west, north, east)" });
   }
 
-  const requete = `[out:json][timeout:25];node["amenity"~"^(cafe|restaurant)$"](${south},${west},${north},${east});out body;`;
+  // Recherche par nom (ex. "Café Roma") en plus du filtre géographique : utilisé par
+  // la recherche de café par nom, en plus du bouton "chercher dans cette zone" qui
+  // n'envoie pas ce paramètre.
+  const filtreNom = nom ? `["name"~"${echapperNomPourOverpass(nom)}",i]` : "";
+  const requete = `[out:json][timeout:25];node["amenity"~"^(cafe|restaurant)$"]${filtreNom}(${south},${west},${north},${east});out body;`;
 
   const diagnostic = [];
   let derniereReponseVide = null; // on garde une réponse vide valide en dernier recours
