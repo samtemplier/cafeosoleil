@@ -1095,11 +1095,47 @@
       panneau.classList.toggle("replie");
       icone.textContent = panneau.classList.contains("replie") ? "+" : "−";
     }
+    function ouvrirPanneau() {
+      panneau.classList.remove("replie");
+      icone.textContent = "−";
+    }
+    function fermerPanneau() {
+      panneau.classList.add("replie");
+      icone.textContent = "+";
+    }
     // Sur la feuille mobile, on peut taper le petit bouton +/-, la poignée, ou le
     // résumé replié (façon Google Maps : toute la partie visible en bas est tapable).
     btnToggle.addEventListener("click", basculerPanneau);
     poignee.addEventListener("click", basculerPanneau);
     resumeCompact.addEventListener("click", basculerPanneau);
+
+    // Glissement tactile sur la poignée / le résumé replié : en plus du tap, on peut
+    // faire glisser le doigt vers le haut pour ouvrir la feuille, vers le bas pour la
+    // refermer (comme sur Google Maps). Un simple seuil de distance au relâchement du
+    // doigt suffit ici, pas besoin de faire suivre la feuille au doigt en temps réel.
+    const SEUIL_GLISSEMENT_PX = 30;
+    function attacherGlissement(element) {
+      let departY = null;
+      element.addEventListener("touchstart", (e) => {
+        departY = e.touches[0].clientY;
+      }, { passive: true });
+      element.addEventListener("touchend", (e) => {
+        if (departY === null) return;
+        const arriveeY = (e.changedTouches[0] || {}).clientY;
+        const deltaY = arriveeY - departY;
+        departY = null;
+        if (deltaY < -SEUIL_GLISSEMENT_PX && panneau.classList.contains("replie")) {
+          ouvrirPanneau();
+          e.preventDefault(); // évite qu'un "click" de secours ne re-bascule juste après
+        } else if (deltaY > SEUIL_GLISSEMENT_PX && !panneau.classList.contains("replie")) {
+          fermerPanneau();
+          e.preventDefault();
+        }
+        // Sinon (mouvement trop faible) : on laisse le tap normal faire son travail.
+      });
+    }
+    attacherGlissement(poignee);
+    attacherGlissement(resumeCompact);
 
     // Met à jour le résumé compact quand l'heure ou la date changent
     function majResume() {
