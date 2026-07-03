@@ -1,6 +1,6 @@
 // Construit un index statique des cafés/restaurants OSM pour les principales villes
 // françaises, pour permettre une recherche par nom instantanée et floue côté client
-// (voir index.html, rechercheDansIndexLocal) au lieu d'interroger Overpass en direct
+// (voir index.html, rechercheOsmPourGeocoder) au lieu d'interroger Overpass en direct
 // à chaque frappe. Script à relancer manuellement de temps en temps pour rafraîchir
 // les données (pas automatisé dans le déploiement).
 //

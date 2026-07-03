@@ -442,11 +442,55 @@
   const METRES_PAR_DEGRE_LAT = 111320;
   const METRES_PAR_DEGRE_LON = METRES_PAR_DEGRE_LAT * Math.cos(refLat * Math.PI / 180);
 
+  // Les noms de lieux viennent d'OpenStreetMap, modifiable par n'importe qui : on les
+  // échappe avant de les insérer dans du HTML (popup) pour éviter qu'un nom malveillant
+  // (ex. <img src=x onerror=...>) ne s'exécute dans le navigateur d'un visiteur.
+  function echapperHtml(texte) {
+    return String(texte).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
   function gpsVersMetres(lon, lat) {
     return { x: (lon - refLon) * METRES_PAR_DEGRE_LON, z: (lat - refLat) * METRES_PAR_DEGRE_LAT };
   }
   function metresVersGps(x, z) {
     return { lon: refLon + x / METRES_PAR_DEGRE_LON, lat: refLat + z / METRES_PAR_DEGRE_LAT };
+  }
+
+  // Extrait les bâtiments actuellement chargés par Mapbox sous la forme {h, ring}
+  // (hauteur en mètres + premier anneau du polygone en coordonnées GPS), prête pour
+  // estDansOmbre. Partagé par afficherPOI() et calculerFriseJournee() pour éviter de
+  // reparser la géométrie des bâtiments à chaque appel.
+  function extraireBatimentsVisibles() {
+    const batiments = [];
+    for (const f of map.querySourceFeatures("composite", { sourceLayer: "building", filter: ["==", "extrude", "true"] })) {
+      if (!f.geometry) continue;
+      let h = parseFloat(f.properties.height); if (isNaN(h) || h <= 0) h = 18;
+      const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates]
+        : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : null;
+      if (!polys) continue;
+      for (const rings of polys) if (rings[0]?.length >= 3) batiments.push({ h, ring: rings[0] });
+    }
+    return batiments;
+  }
+
+  // Teste si le point (x, z en mètres) tombe dans l'ombre d'au moins un des bâtiments
+  // pré-extraits (voir extraireBatimentsVisibles) : on remonte depuis ce point vers le
+  // soleil à la hauteur de chaque bâtiment (offsetX/offsetZ = mètres d'ombre au sol par
+  // mètre de hauteur, dans la direction du soleil) et on teste si le point remonté tombe
+  // à l'intérieur du bâtiment (ray casting 2D). Partagé par afficherPOI() et
+  // calculerFriseJournee() : avant, ce test était dupliqué (et recalculé inutilement à
+  // chaque frappe de la boucle horaire de calculerFriseJournee, ~100 fois par clic).
+  function estDansOmbre(x, z, offsetX, offsetZ, batiments) {
+    for (const bat of batiments) {
+      const t = metresVersGps(x - offsetX * bat.h, z - offsetZ * bat.h);
+      let dedans = false;
+      for (let a = 0, b = bat.ring.length - 1; a < bat.ring.length; b = a++) {
+        const [xa, ya] = bat.ring[a], [xb, yb] = bat.ring[b];
+        if (((ya > t.lat) !== (yb > t.lat)) && t.lon < (xb - xa) * (t.lat - ya) / (yb - ya) + xa) dedans = !dedans;
+      }
+      if (dedans) return true;
+    }
+    return false;
   }
 
   // ============================================================
@@ -839,6 +883,12 @@
       let dernierEtat = null;
       let debutSegment = 0;
 
+      // Les bâtiments visibles ne changent pas d'une tranche horaire à l'autre (seule la
+      // position du soleil change) : on les extrait une seule fois avant la boucle, au
+      // lieu de rappeler querySourceFeatures() et reparser la géométrie ~100 fois par clic.
+      const batiments = extraireBatimentsVisibles();
+      const { x, z } = gpsVersMetres(lon, lat);
+
       for (let minutes = 0; minutes <= 1440; minutes += 15) {
         const d = new Date(date);
         d.setHours(0, 0, 0, 0);
@@ -852,46 +902,7 @@
           const longueurParMetre = 1 / Math.tan(pos.altitude);
           const offsetX = Math.sin(pos.azimuth) * longueurParMetre;
           const offsetZ = Math.cos(pos.azimuth) * longueurParMetre;
-
-          const batiments = map.querySourceFeatures("composite", {
-            sourceLayer: "building", filter: ["==", "extrude", "true"]
-          });
-
-          let estOmbre = false;
-          for (const feature of batiments) {
-            if (!feature.geometry) continue;
-            let hauteur = parseFloat(feature.properties.height);
-            if (isNaN(hauteur) || hauteur <= 0) hauteur = 18;
-
-            const polygones = feature.geometry.type === "Polygon" ? [feature.geometry.coordinates]
-              : feature.geometry.type === "MultiPolygon" ? feature.geometry.coordinates : null;
-            if (!polygones) continue;
-
-            for (const anneaux of polygones) {
-              const anneau = anneaux[0];
-              if (!anneau || anneau.length < 3) continue;
-
-              // On remonte depuis le point testé vers le soleil à la hauteur du bâtiment,
-              // puis on vérifie si ce point remonté tombe à l'intérieur du bâtiment.
-              // Si oui, le bâtiment projette bien son ombre sur notre point d'intérêt.
-              const { x, z } = gpsVersMetres(lon, lat);
-              const testGps = metresVersGps(x - offsetX * hauteur, z - offsetZ * hauteur);
-
-              // Algorithme point-dans-polygone (ray casting 2D)
-              let dedans = false;
-              for (let i = 0, j = anneau.length - 1; i < anneau.length; j = i++) {
-                const xi = anneau[i][0], yi = anneau[i][1];
-                const xj = anneau[j][0], yj = anneau[j][1];
-                if (((yi > testGps.lat) !== (yj > testGps.lat)) &&
-                    testGps.lon < (xj - xi) * (testGps.lat - yi) / (yj - yi) + xi) {
-                  dedans = !dedans;
-                }
-              }
-              if (dedans) { estOmbre = true; break; }
-            }
-            if (estOmbre) break;
-          }
-          etat = estOmbre ? "ombre" : "soleil";
+          etat = estDansOmbre(x, z, offsetX, offsetZ, batiments) ? "ombre" : "soleil";
         }
 
         if (etat !== dernierEtat) {
@@ -928,7 +939,7 @@
         .setLngLat([lon, lat])
         .setHTML(`
           <div class="popup-soleil">
-            <h4>${emoji} ${nom}</h4>
+            <h4>${emoji} ${echapperHtml(nom)}</h4>
             <p style="margin:0 0 6px;font-size:12px;color:${auSoleil ? "#c47c00" : "#4a6fa5"}">
               ${auSoleil ? "☀️ Au soleil en ce moment" : "🌑 À l'ombre en ce moment"}
             </p>
@@ -1004,6 +1015,11 @@
   // Logique POI Cafés (via Overpass / OpenStreetMap)
   // ============================================================
   let seulementAuSoleil = false;
+  // Catégories affichées sur la carte, contrôlées par les boutons .btn-categorie
+  // (data-categorie). Les deux types sont actifs par défaut : seul le bouton "☕ Cafés"
+  // existe dans l'interface, le toggler masque/affiche donc les cafés spécifiquement
+  // sans jamais masquer les restaurants (pas de bouton dédié pour ceux-ci).
+  let categoriesActives = new Set(["cafe", "restaurant"]);
 
   // Cache mémoire des cafés par tuile (~800m de côté). Le tuilage sert uniquement
   // au stockage/affichage (poiCache + localStorage) ; la recherche elle-même se fait
@@ -1468,19 +1484,12 @@
 
     // Pré-extraction des bâtiments (une seule fois pour tous les cafés)
     let offsetX = 0, offsetZ = 0;
-    const batiments = [];
+    let batiments = [];
     if (pos.altitude > 0) {
       const lpm = 1 / Math.tan(pos.altitude);
       offsetX = Math.sin(pos.azimuth) * lpm;
       offsetZ = Math.cos(pos.azimuth) * lpm;
-      for (const f of map.querySourceFeatures("composite", { sourceLayer: "building", filter: ["==", "extrude", "true"] })) {
-        if (!f.geometry) continue;
-        let h = parseFloat(f.properties.height); if (isNaN(h) || h <= 0) h = 18;
-        const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates]
-          : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : null;
-        if (!polys) continue;
-        for (const rings of polys) if (rings[0]?.length >= 3) batiments.push({ h, ring: rings[0] });
-      }
+      batiments = extraireBatimentsVisibles();
     }
 
     // Récupère tous les cafés des tuiles visibles depuis le cache
@@ -1492,19 +1501,9 @@
     for (let ix = ixMin; ix <= ixMax; ix++) {
       for (let iz = izMin; iz <= izMax; iz++) {
         for (const poi of (poiCache.get(`${ix}_${iz}`) || [])) {
-          let auSoleil = pos.altitude > 0;
-          if (pos.altitude > 0) {
-            const { x, z } = gpsVersMetres(poi.lon, poi.lat);
-            for (const bat of batiments) {
-              const t = metresVersGps(x - offsetX * bat.h, z - offsetZ * bat.h);
-              let dedans = false;
-              for (let a = 0, b = bat.ring.length - 1; a < bat.ring.length; b = a++) {
-                const [xa, ya] = bat.ring[a], [xb, yb] = bat.ring[b];
-                if (((ya > t.lat) !== (yb > t.lat)) && t.lon < (xb - xa) * (t.lat - ya) / (yb - ya) + xa) dedans = !dedans;
-              }
-              if (dedans) { auSoleil = false; break; }
-            }
-          }
+          if (!categoriesActives.has(poi.type)) continue;
+          const { x, z } = gpsVersMetres(poi.lon, poi.lat);
+          const auSoleil = pos.altitude > 0 && !estDansOmbre(x, z, offsetX, offsetZ, batiments);
           if (seulementAuSoleil && !auSoleil) continue;
           features.push({
             type: "Feature",
@@ -1520,32 +1519,6 @@
       }
     }
     map.getSource("poi-lieux").setData({ type: "FeatureCollection", features });
-  }
-
-  function estAuSoleil(lon, lat, date) {
-    const pos = SunCalc.getPosition(date, lat, lon);
-    if (pos.altitude <= 0) return false;
-    const lpm = 1 / Math.tan(pos.altitude);
-    const oX = Math.sin(pos.azimuth) * lpm, oZ = Math.cos(pos.azimuth) * lpm;
-    for (const f of map.querySourceFeatures("composite", { sourceLayer: "building", filter: ["==", "extrude", "true"] })) {
-      if (!f.geometry) continue;
-      let h = parseFloat(f.properties.height); if (isNaN(h) || h <= 0) h = 18;
-      const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates]
-        : f.geometry.type === "MultiPolygon" ? f.geometry.coordinates : null;
-      if (!polys) continue;
-      for (const rings of polys) {
-        const ring = rings[0]; if (!ring || ring.length < 3) continue;
-        const { x, z } = gpsVersMetres(lon, lat);
-        const t = metresVersGps(x - oX * h, z - oZ * h);
-        let dedans = false;
-        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-          const [xi, yi] = ring[i], [xj, yj] = ring[j];
-          if (((yi > t.lat) !== (yj > t.lat)) && t.lon < (xj - xi) * (t.lat - yi) / (yj - yi) + xi) dedans = !dedans;
-        }
-        if (dedans) return false;
-      }
-    }
-    return true;
   }
 </script>
 </body>
