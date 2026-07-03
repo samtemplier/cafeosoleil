@@ -160,6 +160,15 @@
     #panneau-controle .mapboxgl-ctrl-geocoder,
     #panneau-controle input[type="date"] { margin-bottom: 7px; }
 
+    /* Safari iOS zoome automatiquement la page quand on tape dans un champ dont la
+       taille de police est < 16px (pour rester lisible) — c'est ce zoom qui fait
+       ensuite déborder le panneau replié/déplié à l'écran. Le seuil de 16px désactive
+       ce comportement, sans changer la taille compacte utilisée ailleurs sur desktop. */
+    #panneau-controle .mapboxgl-ctrl-geocoder input,
+    #panneau-controle input[type="date"] {
+      font-size: 16px !important;
+    }
+
     /* L'astuce clic-droit ne s'applique qu'au desktop (pas de clic droit tactile),
        et chevaucherait la feuille du bas : on la masque sur mobile. */
     #astuce-3d { display: none; }
