@@ -244,13 +244,17 @@
     width: 10px; height: 10px; border-radius: 2px; display: inline-block;
   }
 
-  /* Intégration de la barre de recherche dans le panneau */
+  /* Intégration de la barre de recherche dans le panneau.
+     min-width: 240px vient de la feuille de style par défaut du plugin — sans l'annuler,
+     la barre reste forcée à 240px de large même sur un panneau de 230px (padding compris),
+     donc elle déborde du cadre. */
   .mapboxgl-ctrl-geocoder {
     box-shadow: none !important;
     border: 1px solid #ddd;
     border-radius: 6px;
     width: 100% !important;
     max-width: 100% !important;
+    min-width: 0 !important;
     margin-bottom: 10px;
     font-size: 13px !important;
   }
@@ -969,7 +973,14 @@
       // Fusionne nos propres résultats OSM (cafés/restaurants par nom) avec les
       // adresses/lieux que Mapbox trouve déjà (villes, rues, monuments) — une seule
       // barre, une seule liste déroulante. Voir rechercheOsmPourGeocoder plus bas.
-      externalGeocoder: rechercheOsmPourGeocoder
+      externalGeocoder: rechercheOsmPourGeocoder,
+      // Le plugin plafonne la liste affichée (et le nombre de résultats Mapbox demandés)
+      // à "limit". Nos résultats OSM sont ajoutés EN PREMIER dans la liste fusionnée :
+      // avec la valeur par défaut (5), 5 cafés OSM suffisaient à remplir tout le quota et
+      // faisaient complètement disparaître les adresses Mapbox. On monte donc la limite
+      // et on plafonne nos propres résultats plus bas (voir .slice) pour garder de la
+      // place aux deux types de résultats.
+      limit: 8
     });
     document.getElementById("conteneur-recherche").appendChild(geocoder.onAdd(map));
     geocoder.on("result", gererResultatGeocoder);
@@ -1145,7 +1156,7 @@
       const data = await r.json();
       return (data.elements || [])
         .filter(el => typeof el.lat === "number" && typeof el.lon === "number" && el.tags?.name)
-        .slice(0, 6) // pas plus de 6 suggestions OSM pour ne pas noyer les résultats Mapbox
+        .slice(0, 3) // laisse de la place aux résultats Mapbox dans le quota total (voir "limit" du geocoder)
         .map(el => ({
           type: "Feature",
           place_name: `${el.tags.name} (${el.tags.amenity === "restaurant" ? "restaurant" : "café"})`,
