@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>Carte du soleil</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
 <script src="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js"></script>
 <link href="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.css" rel="stylesheet">
@@ -31,7 +31,11 @@
     box-shadow: 0 2px 8px rgba(0,0,0,0.2);
     font-family: sans-serif;
     font-size: 13px;
-    min-width: 200px;
+    /* largeur fixe (pas juste min-width) : un absolute sans largeur explicite s'élargit
+       pour éviter de faire retourner à la ligne le texte le plus long qu'il contient
+       (ex. le message "dézoom trop important…"), au lieu de le laisser passer à la ligne. */
+    width: 230px;
+    box-sizing: border-box;
     transition: padding 0.2s;
   }
 
@@ -66,20 +70,46 @@
   #resume-compact #resume-heure { font-weight: 600; color: #333; }
   #resume-compact #resume-date { color: #888; font-size: 12px; }
 
-  /* État replié : on cache le contenu et on affiche le résumé compact */
+  /* État replié : on cache le contenu et on affiche le résumé compact.
+     Sur desktop, le replié reprend une largeur au contenu (petit) plutôt que les
+     230px du panneau déplié ; sur mobile, la media query force 100% dans les deux cas. */
   #panneau-controle.replie #panneau-contenu { display: none; }
   #panneau-controle.replie #resume-compact { display: flex; }
-  #panneau-controle.replie { padding: 8px 12px; min-width: 0; }
+  #panneau-controle.replie { padding: 8px 12px; width: auto; min-width: 0; }
 
-  /* Sur mobile (écran étroit OU bas, ex. téléphone en paysage), le panneau est replié
-     par défaut et prend moins de place. Une fois déplié, on limite sa hauteur (au lieu
-     de laisser le contenu pousser en absolute et recouvrir toute la carte) et on le
-     rend défilable à l'intérieur. */
+  /* Poignée de la feuille du bas (visible uniquement sur mobile, voir media query) */
+  #poignee-panneau { display: none; }
+
+  /* Sur mobile (écran étroit OU bas, ex. téléphone en paysage) : le panneau devient une
+     feuille ancrée en bas de l'écran (façon Google Maps), qu'on réduit/agrandit en tapant
+     dessus, plutôt qu'une boîte flottante en haut à gauche qui prend une place fixe. */
   @media (max-width: 600px), (max-height: 500px) {
-    #panneau-controle { max-width: calc(100vw - 24px); padding: 10px 12px; font-size: 12.5px; }
+    #panneau-controle {
+      position: fixed;
+      top: auto; left: 0; right: 0; bottom: 0;
+      width: 100%;
+      max-width: 100%;
+      border-radius: 16px 16px 0 0;
+      padding: 6px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+      box-shadow: 0 -3px 14px rgba(0,0,0,0.18);
+      box-sizing: border-box;
+      font-size: 12.5px;
+    }
+    #poignee-panneau {
+      display: block;
+      width: 36px; height: 4px;
+      margin: 2px auto 8px;
+      background: #ddd;
+      border-radius: 2px;
+    }
+    /* La poignée + le résumé replié sont de gros boutons tactiles pour rouvrir la feuille */
+    #panneau-controle.replie #poignee-panneau,
+    #resume-compact { cursor: pointer; }
+    #resume-compact { justify-content: center; padding: 2px 0; }
+
     #panneau-controle:not(.replie) #panneau-contenu {
       max-width: 100%;
-      max-height: calc(100dvh - 90px);
+      max-height: min(60vh, calc(100dvh - 150px));
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
       padding-right: 2px; /* évite que la scrollbar chevauche le contenu */
@@ -87,6 +117,10 @@
     #panneau-controle #section-poi { margin-top: 7px; padding-top: 7px; }
     #panneau-controle .mapboxgl-ctrl-geocoder,
     #panneau-controle input[type="date"] { margin-bottom: 7px; }
+
+    /* L'astuce clic-droit ne s'applique qu'au desktop (pas de clic droit tactile),
+       et chevaucherait la feuille du bas : on la masque sur mobile. */
+    #astuce-3d { display: none; }
   }
   #panneau-controle label {
     display: block;
@@ -292,6 +326,7 @@
 <div id="map"></div>
 
 <div id="panneau-controle">
+  <div id="poignee-panneau"></div>
   <button id="toggle-panneau" title="Réduire / déplier">
     <span id="toggle-icone">−</span>
   </button>
@@ -1035,17 +1070,24 @@
     const panneau = document.getElementById("panneau-controle");
     const btnToggle = document.getElementById("toggle-panneau");
     const icone = document.getElementById("toggle-icone");
+    const poignee = document.getElementById("poignee-panneau");
+    const resumeCompact = document.getElementById("resume-compact");
     const resumeHeure = document.getElementById("resume-heure");
     const resumeDate = document.getElementById("resume-date");
 
-    // Sur mobile (écran ≤ 600px), le panneau est replié par défaut
+    // Sur mobile (écran ≤ 600px ou bas), le panneau est replié par défaut
     if (window.innerWidth <= 600 || window.innerHeight <= 500) panneau.classList.add("replie");
     icone.textContent = panneau.classList.contains("replie") ? "+" : "−";
 
-    btnToggle.addEventListener("click", () => {
+    function basculerPanneau() {
       panneau.classList.toggle("replie");
       icone.textContent = panneau.classList.contains("replie") ? "+" : "−";
-    });
+    }
+    // Sur la feuille mobile, on peut taper le petit bouton +/-, la poignée, ou le
+    // résumé replié (façon Google Maps : toute la partie visible en bas est tapable).
+    btnToggle.addEventListener("click", basculerPanneau);
+    poignee.addEventListener("click", basculerPanneau);
+    resumeCompact.addEventListener("click", basculerPanneau);
 
     // Met à jour le résumé compact quand l'heure ou la date changent
     function majResume() {
