@@ -1008,6 +1008,21 @@
       limit: 8
     });
     document.getElementById("conteneur-recherche").appendChild(geocoder.onAdd(map));
+
+    // Le plugin ne met aucun attribut autocomplete sur son <input> ; Safari iOS propose
+    // alors ses suggestions de contacts/adresses personnelles au-dessus du clavier
+    // (probablement à cause du mot "Adresse" dans le placeholder). On désactive
+    // explicitement l'autocomplétion navigateur, qui n'a pas de sens ici de toute façon
+    // (les suggestions viennent de Mapbox/notre index, pas de l'historique du champ).
+    const geocoderInput = document.querySelector("#conteneur-recherche input");
+    if (geocoderInput) {
+      geocoderInput.setAttribute("autocomplete", "off");
+      geocoderInput.setAttribute("autocorrect", "off");
+      geocoderInput.setAttribute("autocapitalize", "off");
+      geocoderInput.setAttribute("spellcheck", "false");
+      geocoderInput.setAttribute("name", "recherche-carte"); // évite les heuristiques d'autofill basées sur le nom du champ
+    }
+
     geocoder.on("result", (e) => gererResultatGeocoder(e, geocoder));
   });
 
@@ -1264,6 +1279,9 @@
   // ouverte et le texte de la recherche affiché après coup.
   function gererResultatGeocoder(e, geocoder) {
     geocoder.clear();
+    // geocoder.clear() vide le champ mais ne lui fait pas perdre le focus : sur iPhone,
+    // le clavier restait donc affiché après le choix d'un résultat.
+    document.activeElement?.blur?.();
     window.dispatchEvent(new Event("resultat-recherche-selectionne"));
 
     // Si le résultat choisi est un de nos cafés OSM (et non une adresse Mapbox), on
