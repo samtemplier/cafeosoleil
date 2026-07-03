@@ -1008,7 +1008,7 @@
       limit: 8
     });
     document.getElementById("conteneur-recherche").appendChild(geocoder.onAdd(map));
-    geocoder.on("result", gererResultatGeocoder);
+    geocoder.on("result", (e) => gererResultatGeocoder(e, geocoder));
   });
 
   // ============================================================
@@ -1257,10 +1257,18 @@
       });
   }
 
-  // Quand le résultat choisi dans la barre est un de nos cafés OSM (et non une adresse
-  // Mapbox), on l'ajoute au cache des lieux d'intérêt pour qu'il s'affiche comme un
-  // marqueur cliquable normal (même popup d'ensoleillement que les autres cafés).
-  function gererResultatGeocoder(e) {
+  // Appelé pour N'IMPORTE QUEL résultat choisi dans la barre (adresse Mapbox ou café
+  // OSM) : la carte commence à voler vers ce résultat via le comportement natif du
+  // geocoder — au même moment, on vide le champ et on réduit le panneau sur mobile
+  // pour dégager la vue sur la carte qui se déplace, plutôt que de laisser la feuille
+  // ouverte et le texte de la recherche affiché après coup.
+  function gererResultatGeocoder(e, geocoder) {
+    geocoder.clear();
+    window.dispatchEvent(new Event("resultat-recherche-selectionne"));
+
+    // Si le résultat choisi est un de nos cafés OSM (et non une adresse Mapbox), on
+    // l'ajoute au cache des lieux d'intérêt pour qu'il s'affiche comme un marqueur
+    // cliquable normal (même popup d'ensoleillement que les autres cafés).
     const props = e.result?.properties;
     if (!props?.osmCafe) return;
     const { ix, iz } = indexTuilePOI(props.lon, props.lat);
@@ -1268,8 +1276,7 @@
     if (!poiCache.has(cle)) poiCache.set(cle, []);
     poiCache.get(cle).push({ lon: props.lon, lat: props.lat, nom: props.nom, type: props.type });
     sauvegarderCache();
-    // La carte vole déjà vers e.result.center via le comportement natif du geocoder ;
-    // le "moveend" qui suit redéclenche rafraichirPOI()/afficherPOI() automatiquement.
+    // Le "moveend" qui suit le flyTo redéclenche rafraichirPOI()/afficherPOI() automatiquement.
   }
 
   document.getElementById("checkbox-soleil").addEventListener("change", (e) => {
@@ -1446,6 +1453,13 @@
       }
     }
     window.addEventListener("panneau-contenu-redimensionne", synchroniserHauteurFeuille);
+
+    // Sélectionner un résultat de recherche (adresse ou café) réduit la feuille sur
+    // mobile — la carte qui se déplace vers ce résultat doit rester bien visible plutôt
+    // que cachée par le panneau resté ouvert (voir gererResultatGeocoder).
+    window.addEventListener("resultat-recherche-selectionne", () => {
+      if (zoneMobile()) fermerPanneau();
+    });
 
     // Met à jour le résumé compact quand l'heure ou la date changent
     function majResume() {
