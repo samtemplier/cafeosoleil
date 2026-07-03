@@ -1157,15 +1157,21 @@
       return (data.elements || [])
         .filter(el => typeof el.lat === "number" && typeof el.lon === "number" && el.tags?.name)
         .slice(0, 3) // laisse de la place aux résultats Mapbox dans le quota total (voir "limit" du geocoder)
-        .map(el => ({
-          type: "Feature",
-          place_name: `${el.tags.name} (${el.tags.amenity === "restaurant" ? "restaurant" : "café"})`,
-          text: el.tags.name,
-          center: [el.lon, el.lat],
-          place_type: ["poi"],
-          geometry: { type: "Point", coordinates: [el.lon, el.lat] },
-          properties: { osmCafe: true, lon: el.lon, lat: el.lat, nom: el.tags.name, type: el.tags.amenity }
-        }));
+        .map(el => {
+          const type = el.tags.amenity === "restaurant" ? "restaurant" : "café";
+          // La ville n'est pas toujours taguée dans OSM (souvent absente pour Paris,
+          // par ex.) : on prend ce qu'on a de mieux, sans appel réseau supplémentaire.
+          const lieu = el.tags["addr:city"] || el.tags["contact:city"] || el.tags["addr:postcode"];
+          return {
+            type: "Feature",
+            place_name: lieu ? `${el.tags.name} — ${lieu} (${type})` : `${el.tags.name} (${type})`,
+            text: el.tags.name,
+            center: [el.lon, el.lat],
+            place_type: ["poi"],
+            geometry: { type: "Point", coordinates: [el.lon, el.lat] },
+            properties: { osmCafe: true, lon: el.lon, lat: el.lat, nom: el.tags.name, type: el.tags.amenity }
+          };
+        });
     } catch (e) {
       return [];
     }

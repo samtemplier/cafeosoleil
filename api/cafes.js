@@ -31,6 +31,50 @@ function echapperNomPourOverpass(nom) {
   return sansMetacaracteres.replace(/"/g, '\\"');
 }
 
+// Minuscules + accents retirés, pour comparer "café" et "cafe"/"café" sans être
+// sensible aux variantes d'accentuation.
+function normaliser(texte) {
+  return texte.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+// Mots génériques d'hôtellerie-restauration à éviter comme critère de recherche
+// Overpass : "café" ne filtre presque rien côté sélectivité, ET surtout ne matche pas
+// des variantes orthographiques comme "Caffè" — alors que le nom propre qui accompagne
+// (ex. "Roma") est à la fois plus sélectif et orthographié de façon plus stable.
+const MOTS_GENERIQUES = new Set([
+  "cafe", "caffe", "coffee", "bar", "restaurant", "resto", "bistro", "bistrot",
+  "brasserie", "snack", "pizzeria", "boulangerie", "patisserie", "glacier",
+  "salon", "the", "house", "shop", "place", "le", "la", "les", "de", "du", "des"
+]);
+
+// Choisit, parmi les mots de la recherche, celui à utiliser comme filtre Overpass :
+// le plus long des mots non-génériques (le nom propre, généralement), ou à défaut le
+// plus long mot tout court. Les autres mots servent seulement au classement ensuite
+// (voir classerParPertinence), pas au filtrage côté serveur Overpass.
+function motDistinctif(nom) {
+  const mots = nom.trim().split(/\s+/).filter(m => m.length >= 2);
+  if (mots.length === 0) return nom.trim();
+  const nonGeneriques = mots.filter(m => !MOTS_GENERIQUES.has(normaliser(m)));
+  const candidats = nonGeneriques.length > 0 ? nonGeneriques : mots;
+  return candidats.reduce((a, b) => (b.length > a.length ? b : a));
+}
+
+// Classe les résultats par nombre de mots de la recherche originale retrouvés dans le
+// nom du lieu (après normalisation accents/casse) : les correspondances les plus
+// complètes remontent en premier, même si le filtre Overpass n'a porté que sur un seul
+// mot distinctif.
+function classerParPertinence(elements, requeteOriginale) {
+  const motsRequete = normaliser(requeteOriginale).split(/\s+/).filter(Boolean);
+  return elements
+    .map(el => {
+      const nomNormalise = normaliser(el.tags?.name || "");
+      const score = motsRequete.filter(m => nomNormalise.includes(m)).length;
+      return { el, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map(({ el }) => el);
+}
+
 module.exports = async function handler(req, res) {
   const { south, west, north, east, nom } = req.query;
   if (!south || !west || !north || !east) {
@@ -39,8 +83,12 @@ module.exports = async function handler(req, res) {
 
   // Recherche par nom (ex. "Café Roma") en plus du filtre géographique : utilisé par
   // la recherche de café par nom, en plus du bouton "chercher dans cette zone" qui
-  // n'envoie pas ce paramètre.
-  const filtreNom = nom ? `["name"~"${echapperNomPourOverpass(nom)}",i]` : "";
+  // n'envoie pas ce paramètre. On filtre côté Overpass sur le mot le plus distinctif
+  // de la requête (pas la phrase entière) : un mot générique comme "café" ne matche
+  // pas "Caffè" (orthographe différente selon la langue), alors que le nom propre qui
+  // l'accompagne (ex. "Roma") est à la fois plus sélectif et plus stable. Les résultats
+  // sont ensuite reclassés par nombre de mots de la requête retrouvés (classerParPertinence).
+  const filtreNom = nom ? `["name"~"${echapperNomPourOverpass(motDistinctif(nom))}",i]` : "";
   const requete = `[out:json][timeout:25];node["amenity"~"^(cafe|restaurant)$"]${filtreNom}(${south},${west},${north},${east});out body;`;
 
   const diagnostic = [];
@@ -87,6 +135,7 @@ module.exports = async function handler(req, res) {
 
       // Succès avec des données : cache 1h côté CDN Vercel
       res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
+      if (nom) data.elements = classerParPertinence(data.elements, nom);
       return res.status(200).json(data);
 
     } catch (e) {
