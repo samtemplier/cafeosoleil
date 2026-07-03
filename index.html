@@ -70,9 +70,10 @@
   #resume-compact #resume-heure { font-weight: 600; color: #333; }
   #resume-compact #resume-date { color: #888; font-size: 12px; }
 
-  /* État replié : on cache le contenu et on affiche le résumé compact.
-     Sur desktop, le replié reprend une largeur au contenu (petit) plutôt que les
-     230px du panneau déplié ; sur mobile, la media query force 100% dans les deux cas. */
+  /* État replié (desktop) : on cache le contenu et on affiche le résumé compact.
+     Le replié reprend une largeur au contenu (petit) plutôt que les 230px du panneau
+     déplié. Sur mobile, tout ceci est remplacé par le mécanisme de la media query
+     ci-dessous (hauteur animée en JS, résumé et contenu superposés en fondu). */
   #panneau-controle.replie #panneau-contenu { display: none; }
   #panneau-controle.replie #resume-compact { display: flex; }
   #panneau-controle.replie { padding: 8px 12px; width: auto; min-width: 0; }
@@ -81,8 +82,8 @@
   #poignee-panneau { display: none; }
 
   /* Sur mobile (écran étroit OU bas, ex. téléphone en paysage) : le panneau devient une
-     feuille ancrée en bas de l'écran (façon Google Maps), qu'on réduit/agrandit en tapant
-     dessus, plutôt qu'une boîte flottante en haut à gauche qui prend une place fixe. */
+     feuille ancrée en bas de l'écran (façon Google Maps), qu'on ouvre/ferme en tapant,
+     glissant, ou en tapant la carte — voir initPanneau() dans le script. */
   @media (max-width: 600px), (max-height: 500px) {
     #panneau-controle {
       position: fixed;
@@ -90,29 +91,63 @@
       width: 100%;
       max-width: 100%;
       border-radius: 16px 16px 0 0;
-      padding: 6px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+      padding: 0 16px calc(10px + env(safe-area-inset-bottom, 0px));
       box-shadow: 0 -3px 14px rgba(0,0,0,0.18);
       box-sizing: border-box;
       font-size: 12.5px;
     }
+    /* Zone de la poignée agrandie pour être facile à attraper au doigt : la barre
+       visible (::after) est petite, mais toute cette zone est tapable/glissable. */
     #poignee-panneau {
       display: block;
+      width: 100%;
+      height: 24px;
+      position: relative;
+      cursor: pointer;
+    }
+    #poignee-panneau::after {
+      content: "";
+      position: absolute;
+      top: 10px; left: 50%;
+      transform: translateX(-50%);
       width: 36px; height: 4px;
-      margin: 2px auto 8px;
       background: #ddd;
       border-radius: 2px;
     }
-    /* La poignée + le résumé replié sont de gros boutons tactiles pour rouvrir la feuille */
-    #panneau-controle.replie #poignee-panneau,
-    #resume-compact { cursor: pointer; }
-    #resume-compact { justify-content: center; padding: 2px 0; }
 
-    #panneau-controle:not(.replie) #panneau-contenu {
+    /* Wrapper dont la hauteur est animée en JS entre l'état replié (juste assez pour
+       le résumé) et déplié (tout le contenu, plafonné). Résumé et contenu sont tous
+       deux toujours présents et superposés, on fait un fondu enchaîné entre eux plutôt
+       que display:none — ça permet une animation fluide de la feuille (hauteur + fondu)
+       qui suit le doigt pendant un glissement, au lieu d'un basculement net. */
+    #panneau-feuille {
+      position: relative;
+      overflow: hidden;
+      transition: height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    #panneau-feuille.glissement-actif { transition: none; }
+
+    #panneau-controle #resume-compact {
+      display: flex;
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      background: white;
+      cursor: pointer;
+      justify-content: center;
+      padding: 2px 0;
+      transition: opacity 0.2s ease;
+    }
+    #panneau-controle.replie #resume-compact { opacity: 1; pointer-events: auto; }
+    #panneau-controle:not(.replie) #resume-compact { opacity: 0; pointer-events: none; }
+
+    #panneau-controle.replie #panneau-contenu { display: block; } /* toujours rendu sur mobile */
+    #panneau-controle #panneau-contenu {
       max-width: 100%;
       max-height: min(60vh, calc(100dvh - 150px));
       overflow-y: auto;
       -webkit-overflow-scrolling: touch;
       padding-right: 2px; /* évite que la scrollbar chevauche le contenu */
+      padding-bottom: 4px;
     }
     #panneau-controle #section-poi { margin-top: 7px; padding-top: 7px; }
     #panneau-controle .mapboxgl-ctrl-geocoder,
@@ -330,40 +365,45 @@
   <button id="toggle-panneau" title="Réduire / déplier">
     <span id="toggle-icone">−</span>
   </button>
-  <div id="panneau-contenu">
-    <div id="conteneur-recherche"></div>
-    <label for="input-date">Date</label>
-    <input type="date" id="input-date">
+  <!-- panneau-feuille : wrapper dont la hauteur est animée en JS (voir initPanneau) pour
+       le glissement fluide sur mobile ; résumé et contenu sont superposés et se fondent
+       l'un dans l'autre plutôt que de basculer net via display:none. -->
+  <div id="panneau-feuille">
+    <div id="panneau-contenu">
+      <div id="conteneur-recherche"></div>
+      <label for="input-date">Date</label>
+      <input type="date" id="input-date">
 
-    <div id="conteneur-slider">
-      <div id="label-heure">
-        <span>Heure</span>
-        <span id="affichage-heure">12:00</span>
+      <div id="conteneur-slider">
+        <div id="label-heure">
+          <span>Heure</span>
+          <span id="affichage-heure">12:00</span>
+        </div>
+        <input type="range" id="slider-heure" min="0" max="1439" step="5" value="720">
+        <div id="axe-heures">
+          <span>0h</span><span>6h</span><span>12h</span><span>18h</span><span>24h</span>
+        </div>
       </div>
-      <input type="range" id="slider-heure" min="0" max="1439" step="5" value="720">
-      <div id="axe-heures">
-        <span>0h</span><span>6h</span><span>12h</span><span>18h</span><span>24h</span>
+      <div id="statut">Chargement...</div>
+      <div id="message-zoom">Dézoom trop important — rapprochez-vous pour voir les ombres.</div>
+
+      <div id="section-poi">
+        <div class="titre-section">Lieux d'intérêt</div>
+        <div id="filtres-categorie">
+          <button class="btn-categorie actif" data-categorie="cafe">☕ Cafés</button>
+        </div>
+        <label id="filtre-soleil-uniquement">
+          <input type="checkbox" id="checkbox-soleil"> Uniquement au soleil ☀️
+        </label>
+        <button id="btn-chercher-zone">🔍 Chercher les cafés dans cette zone</button>
+        <div id="statut-recherche-poi"></div>
       </div>
     </div>
-    <div id="statut">Chargement...</div>
-    <div id="message-zoom">Dézoom trop important — rapprochez-vous pour voir les ombres.</div>
-
-    <div id="section-poi">
-      <div class="titre-section">Lieux d'intérêt</div>
-      <div id="filtres-categorie">
-        <button class="btn-categorie actif" data-categorie="cafe">☕ Cafés</button>
-      </div>
-      <label id="filtre-soleil-uniquement">
-        <input type="checkbox" id="checkbox-soleil"> Uniquement au soleil ☀️
-      </label>
-      <button id="btn-chercher-zone">🔍 Chercher les cafés dans cette zone</button>
-      <div id="statut-recherche-poi"></div>
+    <!-- Résumé compact affiché quand le panneau est replié (mobile essentiellement) -->
+    <div id="resume-compact">
+      <span id="resume-heure">12:00</span>
+      <span id="resume-date"></span>
     </div>
-  </div>
-  <!-- Résumé compact affiché quand le panneau est replié (mobile essentiellement) -->
-  <div id="resume-compact">
-    <span id="resume-heure">12:00</span>
-    <span id="resume-date"></span>
   </div>
 </div>
 
@@ -736,6 +776,9 @@
       map.getSource("ombres")?.setData(genererOmbresBatiments(date));
       map.getSource("rayon-soleil")?.setData(genererRayonSoleil(date));
       messageZoom.style.display = affichageLimite() ? "block" : "none";
+      // Le message peut changer la hauteur du contenu : on prévient le panneau mobile
+      // (feuille du bas) pour qu'il réajuste sa hauteur animée en conséquence.
+      window.dispatchEvent(new Event("panneau-contenu-redimensionne"));
       // Les POI sont rafraîchis séparément via rafraichirPOI(),
       // appelée uniquement sur action explicite (bouton, slider, moveend).
     }
@@ -1080,62 +1123,121 @@
   // ============================================================
   (function initPanneau() {
     const panneau = document.getElementById("panneau-controle");
+    const feuille = document.getElementById("panneau-feuille");
     const btnToggle = document.getElementById("toggle-panneau");
     const icone = document.getElementById("toggle-icone");
     const poignee = document.getElementById("poignee-panneau");
+    const contenu = document.getElementById("panneau-contenu");
     const resumeCompact = document.getElementById("resume-compact");
     const resumeHeure = document.getElementById("resume-heure");
     const resumeDate = document.getElementById("resume-date");
 
-    // Sur mobile (écran ≤ 600px ou bas), le panneau est replié par défaut
-    if (window.innerWidth <= 600 || window.innerHeight <= 500) panneau.classList.add("replie");
-    icone.textContent = panneau.classList.contains("replie") ? "+" : "−";
-
-    function basculerPanneau() {
-      panneau.classList.toggle("replie");
-      icone.textContent = panneau.classList.contains("replie") ? "+" : "−";
+    function zoneMobile() {
+      return window.innerWidth <= 600 || window.innerHeight <= 500;
     }
+    // Hauteur du résumé replié / du contenu déplié (mesurées à la volée : le contenu
+    // change de taille selon ce qui s'affiche, ex. le message "dézoom trop important").
+    function hauteurRepliee() { return resumeCompact.getBoundingClientRect().height; }
+    function hauteurDepliee() { return contenu.getBoundingClientRect().height; }
+
     function ouvrirPanneau() {
       panneau.classList.remove("replie");
       icone.textContent = "−";
+      if (zoneMobile()) {
+        feuille.classList.remove("glissement-actif");
+        feuille.style.height = hauteurDepliee() + "px";
+      }
     }
     function fermerPanneau() {
       panneau.classList.add("replie");
       icone.textContent = "+";
+      if (zoneMobile()) {
+        feuille.classList.remove("glissement-actif");
+        feuille.style.height = hauteurRepliee() + "px";
+      }
     }
-    // Sur la feuille mobile, on peut taper le petit bouton +/-, la poignée, ou le
-    // résumé replié (façon Google Maps : toute la partie visible en bas est tapable).
-    btnToggle.addEventListener("click", basculerPanneau);
-    poignee.addEventListener("click", basculerPanneau);
-    resumeCompact.addEventListener("click", basculerPanneau);
+    function basculerPanneau() {
+      if (panneau.classList.contains("replie")) ouvrirPanneau(); else fermerPanneau();
+    }
 
-    // Glissement tactile sur la poignée / le résumé replié : en plus du tap, on peut
-    // faire glisser le doigt vers le haut pour ouvrir la feuille, vers le bas pour la
-    // refermer (comme sur Google Maps). Un simple seuil de distance au relâchement du
-    // doigt suffit ici, pas besoin de faire suivre la feuille au doigt en temps réel.
-    const SEUIL_GLISSEMENT_PX = 30;
+    // État initial : replié par défaut sur mobile/écran bas.
+    if (zoneMobile()) {
+      panneau.classList.add("replie");
+      feuille.style.height = hauteurRepliee() + "px";
+    }
+    icone.textContent = panneau.classList.contains("replie") ? "+" : "−";
+
+    // ---- Les 3 façons d'ouvrir la feuille (mobile) ----
+    // 1) Taper le bouton "+/-" ou la poignée ou le résumé replié.
+    // 2) Glisser le doigt vers le haut (voir plus bas).
+    // 3) Taper n'importe où ailleurs sur le panneau replié.
+    btnToggle.addEventListener("click", (e) => { e.stopPropagation(); basculerPanneau(); });
+    poignee.addEventListener("click", (e) => { e.stopPropagation(); basculerPanneau(); });
+    resumeCompact.addEventListener("click", (e) => { e.stopPropagation(); basculerPanneau(); });
+    panneau.addEventListener("click", () => {
+      if (zoneMobile() && panneau.classList.contains("replie")) ouvrirPanneau();
+    });
+
+    // ---- Les 3 façons de fermer la feuille (mobile) ----
+    // 1) Taper le bouton "+/-". 2) Glisser vers le bas. 3) Taper la carte (façon Google Maps).
+    map.on("click", () => {
+      if (zoneMobile() && !panneau.classList.contains("replie")) fermerPanneau();
+    });
+
+    // ---- Glissement fluide : la feuille suit le doigt en temps réel ----
+    // (hauteur + fondu du résumé), puis se cale sur l'état le plus proche au relâchement.
+    let glissement = null;
+    function progression(hActuelle, hR, hD) {
+      if (hD <= hR) return 1;
+      return Math.min(1, Math.max(0, (hActuelle - hR) / (hD - hR)));
+    }
     function attacherGlissement(element) {
-      let departY = null;
       element.addEventListener("touchstart", (e) => {
-        departY = e.touches[0].clientY;
+        if (!zoneMobile() || glissement) return;
+        const hR = hauteurRepliee();
+        const hD = hauteurDepliee();
+        const hInitiale = panneau.classList.contains("replie") ? hR : hD;
+        glissement = { departY: e.touches[0].clientY, hR, hD, hInitiale };
+        feuille.classList.add("glissement-actif");
+        feuille.style.height = hInitiale + "px";
       }, { passive: true });
+
+      element.addEventListener("touchmove", (e) => {
+        if (!glissement) return;
+        const deltaY = e.touches[0].clientY - glissement.departY; // positif = doigt vers le bas
+        let h = glissement.hInitiale - deltaY; // doigt vers le haut => hauteur augmente
+        h = Math.min(glissement.hD, Math.max(glissement.hR, h));
+        feuille.style.height = h + "px";
+        resumeCompact.style.opacity = String(1 - progression(h, glissement.hR, glissement.hD));
+      }, { passive: true });
+
       element.addEventListener("touchend", (e) => {
-        if (departY === null) return;
-        const arriveeY = (e.changedTouches[0] || {}).clientY;
-        const deltaY = arriveeY - departY;
-        departY = null;
-        if (deltaY < -SEUIL_GLISSEMENT_PX && panneau.classList.contains("replie")) {
-          ouvrirPanneau();
-          e.preventDefault(); // évite qu'un "click" de secours ne re-bascule juste après
-        } else if (deltaY > SEUIL_GLISSEMENT_PX && !panneau.classList.contains("replie")) {
-          fermerPanneau();
-          e.preventDefault();
-        }
-        // Sinon (mouvement trop faible) : on laisse le tap normal faire son travail.
+        if (!glissement) return;
+        const { departY, hR, hD, hInitiale } = glissement;
+        const dernierY = (e.changedTouches[0] || {}).clientY;
+        const deltaY = (dernierY ?? departY) - departY;
+        const hActuelle = parseFloat(feuille.style.height) || hInitiale;
+        const p = progression(hActuelle, hR, hD);
+        feuille.classList.remove("glissement-actif");
+        resumeCompact.style.opacity = "";
+        glissement = null;
+        if (p > 0.4) ouvrirPanneau(); else fermerPanneau();
+        if (Math.abs(deltaY) > 5) { e.preventDefault(); e.stopPropagation(); }
       });
     }
     attacherGlissement(poignee);
     attacherGlissement(resumeCompact);
+
+    // Réajuste la hauteur de la feuille (mobile) sur sa cible actuelle, tant qu'aucun
+    // glissement n'est en cours — utile quand le contenu change de taille (texte plus
+    // long, message "dézoom trop important" qui apparaît/disparaît, etc).
+    function synchroniserHauteurFeuille() {
+      if (zoneMobile() && !glissement) {
+        feuille.classList.remove("glissement-actif");
+        feuille.style.height = (panneau.classList.contains("replie") ? hauteurRepliee() : hauteurDepliee()) + "px";
+      }
+    }
+    window.addEventListener("panneau-contenu-redimensionne", synchroniserHauteurFeuille);
 
     // Met à jour le résumé compact quand l'heure ou la date changent
     function majResume() {
@@ -1147,6 +1249,7 @@
       resumeHeure.textContent = `${hh}:${mm}`;
       const d = inputDate.value ? new Date(inputDate.value) : new Date();
       resumeDate.textContent = d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+      synchroniserHauteurFeuille();
     }
     majResume();
     document.getElementById("input-date").addEventListener("input", majResume);
