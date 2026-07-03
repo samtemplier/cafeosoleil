@@ -344,38 +344,6 @@
   }
   #statut-recherche-poi.avertissement { color: #a05a2c; }
 
-  #recherche-nom-cafe {
-    display: flex;
-    gap: 5px;
-    margin-top: 9px;
-  }
-  #recherche-nom-cafe input {
-    flex: 1;
-    min-width: 0;
-    padding: 6px 8px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    font-size: 12.5px;
-    box-sizing: border-box;
-  }
-  #recherche-nom-cafe button {
-    padding: 6px 10px;
-    border: none;
-    border-radius: 6px;
-    background: #e07a3f;
-    color: white;
-    cursor: pointer;
-    font-size: 13px;
-  }
-  #recherche-nom-cafe button:hover { opacity: 0.85; }
-  #recherche-nom-cafe button:disabled { background: #ccc; cursor: not-allowed; }
-  #statut-recherche-nom {
-    margin-top: 5px;
-    font-size: 11.5px;
-    color: #888;
-  }
-  #statut-recherche-nom.avertissement { color: #a05a2c; }
-
   #astuce-3d {
     position: absolute;
     bottom: 12px; left: 12px;
@@ -431,12 +399,6 @@
         </label>
         <button id="btn-chercher-zone">🔍 Chercher les cafés dans cette zone</button>
         <div id="statut-recherche-poi"></div>
-
-        <div id="recherche-nom-cafe">
-          <input type="text" id="input-nom-cafe" placeholder="Chercher un café par son nom…">
-          <button id="btn-chercher-nom-cafe" title="Chercher">🔎</button>
-        </div>
-        <div id="statut-recherche-nom"></div>
       </div>
     </div>
     <!-- Résumé compact affiché quand le panneau est replié (mobile essentiellement) -->
@@ -486,20 +448,11 @@
 
   // Bouton de géolocalisation (façon Google Maps) : centre la carte sur la position
   // exacte de l'utilisateur au clic, avec cercle de précision et suivi en direct.
-  const controleGeoloc = new mapboxgl.GeolocateControl({
+  map.addControl(new mapboxgl.GeolocateControl({
     positionOptions: { enableHighAccuracy: true },
     trackUserLocation: true,
     showUserHeading: true
-  });
-  map.addControl(controleGeoloc, "top-right");
-
-  // Mémorise la dernière position connue : sert de centre "à côté de moi" pour la
-  // recherche de café par nom (voir chercherCafeParNom), sans devoir redemander la
-  // permission de géolocalisation à chaque recherche.
-  let dernierePositionGeoloc = null;
-  controleGeoloc.on("geolocate", (e) => {
-    dernierePositionGeoloc = { lng: e.coords.longitude, lat: e.coords.latitude };
-  });
+  }), "top-right");
 
   // ============================================================
   // Garde-fou : on plafonne la zone de calcul à un rayon fixe autour
@@ -1008,13 +961,18 @@
     const geocoder = new MapboxGeocoder({
       accessToken: mapboxgl.accessToken,
       mapboxgl: mapboxgl,
-      placeholder: "Rechercher une adresse...",
+      placeholder: "Adresse, café, lieu…",
       language: "fr",
       countries: "fr",  // priorité aux résultats français (retirer pour usage mondial)
       zoom: 17,
-      marker: false     // pas de marqueur : la carte se centre directement
+      marker: false,     // pas de marqueur : la carte se centre directement
+      // Fusionne nos propres résultats OSM (cafés/restaurants par nom) avec les
+      // adresses/lieux que Mapbox trouve déjà (villes, rues, monuments) — une seule
+      // barre, une seule liste déroulante. Voir rechercheOsmPourGeocoder plus bas.
+      externalGeocoder: rechercheOsmPourGeocoder
     });
     document.getElementById("conteneur-recherche").appendChild(geocoder.onAdd(map));
+    geocoder.on("result", gererResultatGeocoder);
   });
 
   // ============================================================
@@ -1162,78 +1120,60 @@
 
   document.getElementById("btn-chercher-zone").addEventListener("click", chercherZoneVisible);
 
-  // Recherche un café par son nom (ex. "Café Roma") dans un rayon autour de la position
-  // de l'utilisateur (si connue via le bouton de géolocalisation) ou du centre de la
-  // carte sinon — contrairement à la barre d'adresse Mapbox, ça interroge directement
-  // les mêmes données OSM que le reste de l'app : le résultat est donc garanti cliquable
-  // pour voir son ensoleillement, pas juste un point géocodé sans rapport avec nos cafés.
-  const RAYON_RECHERCHE_NOM_DEG = 0.09; // ~10 km
-  async function chercherCafeParNom() {
-    const input = document.getElementById("input-nom-cafe");
-    const btn = document.getElementById("btn-chercher-nom-cafe");
-    const statut = document.getElementById("statut-recherche-nom");
-    const nom = input.value.trim();
-    if (!nom) return;
-
-    const centre = dernierePositionGeoloc || map.getCenter();
+  // Complète la barre d'adresse unique avec les cafés/restaurants OSM correspondant au
+  // nom tapé (ex. "Café Roma"), en plus des adresses/lieux que Mapbox trouve déjà tout
+  // seul (villes, rues, monuments comme "Tour Montparnasse" — pas touché ici). Branché
+  // sur le geocoder via son option "externalGeocoder" (voir plus bas) : ses résultats
+  // sont fusionnés dans la même liste déroulante, une seule barre au lieu de deux.
+  //
+  // La zone de recherche reste centrée sur la vue actuelle de la carte (pas la France
+  // entière) : les miroirs Overpass publics sont trop lents/instables sur de grandes
+  // zones même avec un filtre nom (testé : une requête sur toute la France ou même sur
+  // ~100km échoue systématiquement en timeout). "café roma" retrouve donc un café près
+  // d'ici ; pour un café dans une autre ville, chercher d'abord cette ville (déjà
+  // rapide et fiable via Mapbox), puis chercher le nom du café une fois la carte là-bas.
+  const RAYON_RECHERCHE_NOM_DEG = 0.15; // ~15-17 km, calibré pour rester fiable
+  async function rechercheOsmPourGeocoder(requete) {
+    const nom = requete.trim();
+    if (nom.length < 3) return [];
+    const centre = map.getCenter();
     const south = centre.lat - RAYON_RECHERCHE_NOM_DEG, north = centre.lat + RAYON_RECHERCHE_NOM_DEG;
     const west = centre.lng - RAYON_RECHERCHE_NOM_DEG, east = centre.lng + RAYON_RECHERCHE_NOM_DEG;
-
-    btn.disabled = true;
-    statut.classList.remove("avertissement");
-    statut.textContent = "Recherche…";
-
     try {
       const r = await fetch(`${URL_API_CAFES}?south=${south}&west=${west}&north=${north}&east=${east}&nom=${encodeURIComponent(nom)}`);
-      if (!r.ok) throw new Error(r.status);
+      if (!r.ok) return [];
       const data = await r.json();
-      const elements = (data.elements || []).filter(el => typeof el.lat === "number" && typeof el.lon === "number" && el.tags);
-
-      if (elements.length === 0) {
-        statut.textContent = `Aucun café "${nom}" trouvé à proximité.`;
-        statut.classList.add("avertissement");
-        return;
-      }
-
-      // Insère tous les résultats dans le cache (ils deviennent des marqueurs cliquables
-      // comme les autres), et repère le plus proche du centre de recherche pour y voler.
-      let plusProche = null, distanceMin = Infinity;
-      elements.forEach(el => {
-        const type = el.tags.amenity;
-        const { ix, iz } = indexTuilePOI(el.lon, el.lat);
-        const cle = `${ix}_${iz}`;
-        if (!poiCache.has(cle)) poiCache.set(cle, []);
-        poiCache.get(cle).push({
-          lon: el.lon,
-          lat: el.lat,
-          nom: el.tags.name || (type === "restaurant" ? "Restaurant" : "Café"),
-          type
-        });
-        const { x, z } = gpsVersMetres(el.lon, el.lat);
-        const { x: xCentre, z: zCentre } = gpsVersMetres(centre.lng, centre.lat);
-        const distance = Math.hypot(x - xCentre, z - zCentre);
-        if (distance < distanceMin) { distanceMin = distance; plusProche = el; }
-      });
-
-      sauvegarderCache();
-      map.flyTo({ center: [plusProche.lon, plusProche.lat], zoom: 17 });
-      afficherPOI();
-
-      const nomTrouve = plusProche.tags.name || nom;
-      statut.textContent = elements.length > 1
-        ? `${elements.length} résultats pour "${nom}" — le plus proche (${nomTrouve}) est affiché.`
-        : `${nomTrouve} trouvé — tapez dessus pour voir son ensoleillement.`;
+      return (data.elements || [])
+        .filter(el => typeof el.lat === "number" && typeof el.lon === "number" && el.tags?.name)
+        .slice(0, 6) // pas plus de 6 suggestions OSM pour ne pas noyer les résultats Mapbox
+        .map(el => ({
+          type: "Feature",
+          place_name: `${el.tags.name} (${el.tags.amenity === "restaurant" ? "restaurant" : "café"})`,
+          text: el.tags.name,
+          center: [el.lon, el.lat],
+          place_type: ["poi"],
+          geometry: { type: "Point", coordinates: [el.lon, el.lat] },
+          properties: { osmCafe: true, lon: el.lon, lat: el.lat, nom: el.tags.name, type: el.tags.amenity }
+        }));
     } catch (e) {
-      statut.textContent = "Échec de la recherche, réessayez.";
-      statut.classList.add("avertissement");
-    } finally {
-      btn.disabled = false;
+      return [];
     }
   }
-  document.getElementById("btn-chercher-nom-cafe").addEventListener("click", chercherCafeParNom);
-  document.getElementById("input-nom-cafe").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") chercherCafeParNom();
-  });
+
+  // Quand le résultat choisi dans la barre est un de nos cafés OSM (et non une adresse
+  // Mapbox), on l'ajoute au cache des lieux d'intérêt pour qu'il s'affiche comme un
+  // marqueur cliquable normal (même popup d'ensoleillement que les autres cafés).
+  function gererResultatGeocoder(e) {
+    const props = e.result?.properties;
+    if (!props?.osmCafe) return;
+    const { ix, iz } = indexTuilePOI(props.lon, props.lat);
+    const cle = `${ix}_${iz}`;
+    if (!poiCache.has(cle)) poiCache.set(cle, []);
+    poiCache.get(cle).push({ lon: props.lon, lat: props.lat, nom: props.nom, type: props.type });
+    sauvegarderCache();
+    // La carte vole déjà vers e.result.center via le comportement natif du geocoder ;
+    // le "moveend" qui suit redéclenche rafraichirPOI()/afficherPOI() automatiquement.
+  }
 
   document.getElementById("checkbox-soleil").addEventListener("change", (e) => {
     seulementAuSoleil = e.target.checked;
