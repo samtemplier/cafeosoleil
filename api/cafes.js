@@ -75,6 +75,48 @@ function classerParPertinence(elements, requeteOriginale) {
     .map(({ el }) => el);
 }
 
+// Interroge un miroir Overpass. Résout avec les données dès qu'il y a au moins un
+// élément ; rejette sinon (y compris pour une réponse 200 mais vide — voir plus bas
+// pourquoi ce cas est traité à part), pour pouvoir utiliser Promise.any() et lancer
+// tous les miroirs EN PARALLÈLE plutôt qu'en séquence. Avant ce changement, un miroir
+// lent faisait attendre jusqu'à 9s avant même d'essayer le suivant (jusqu'à 27s dans
+// le pire cas) ; en parallèle, on ne paie que le temps du plus rapide à répondre.
+async function interrogerServeur(url, requete) {
+  const controleur = new AbortController();
+  const idTimeout = setTimeout(() => controleur.abort(), 9000);
+  try {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: EN_TETES,
+      body: "data=" + encodeURIComponent(requete),
+      signal: controleur.signal
+    });
+    if (!r.ok) throw { url, status: r.status };
+
+    const texte = await r.text();
+    let data;
+    try {
+      data = JSON.parse(texte);
+    } catch (e) {
+      throw { url, status: r.status, erreur: "réponse non-JSON", extrait: texte.slice(0, 120) };
+    }
+
+    const nb = Array.isArray(data.elements) ? data.elements.length : 0;
+    if (nb === 0) {
+      // Réponse valide mais vide : peut-être une instance aux données cassées, ou la
+      // zone est réellement sans résultat. On la garde de côté (voir plus bas) sans
+      // laisser un miroir vide "gagner la course" face à un autre qui aurait des données.
+      throw { url, status: 200, elements: 0, videMaisValide: true, data };
+    }
+    return data;
+  } catch (e) {
+    if (e && e.name === "AbortError") throw { url, erreur: "timeout" };
+    throw e;
+  } finally {
+    clearTimeout(idTimeout);
+  }
+}
+
 module.exports = async function handler(req, res) {
   const { south, west, north, east, nom } = req.query;
   if (!south || !west || !north || !east) {
@@ -91,66 +133,21 @@ module.exports = async function handler(req, res) {
   const filtreNom = nom ? `["name"~"${echapperNomPourOverpass(motDistinctif(nom))}",i]` : "";
   const requete = `[out:json][timeout:25];node["amenity"~"^(cafe|restaurant)$"]${filtreNom}(${south},${west},${north},${east});out body;`;
 
-  const diagnostic = [];
-  let derniereReponseVide = null; // on garde une réponse vide valide en dernier recours
-
-  for (const url of SERVEURS_OVERPASS) {
-    try {
-      const controleur = new AbortController();
-      const idTimeout = setTimeout(() => controleur.abort(), 9000);
-
-      // Overpass attend "data=<requête urlencodée>" avec ce Content-Type.
-      const r = await fetch(url, {
-        method: "POST",
-        headers: EN_TETES,
-        body: "data=" + encodeURIComponent(requete),
-        signal: controleur.signal
-      });
-      clearTimeout(idTimeout);
-
-      if (!r.ok) {
-        diagnostic.push({ url, status: r.status });
-        continue;
-      }
-
-      const texte = await r.text();
-      let data;
-      try {
-        data = JSON.parse(texte);
-      } catch (e) {
-        diagnostic.push({ url, status: r.status, erreur: "réponse non-JSON", extrait: texte.slice(0, 120) });
-        continue;
-      }
-
-      const nb = Array.isArray(data.elements) ? data.elements.length : 0;
-
-      if (nb === 0) {
-        // Réponse valide mais vide : peut-être une instance aux données cassées.
-        // On la mémorise et on tente le serveur suivant ; si tous sont vides,
-        // on renverra cette réponse (la zone est peut-être réellement sans café).
-        diagnostic.push({ url, status: 200, elements: 0 });
-        derniereReponseVide = data;
-        continue;
-      }
-
-      // Succès avec des données : cache 1h côté CDN Vercel
-      res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
-      if (nom) data.elements = classerParPertinence(data.elements, nom);
-      return res.status(200).json(data);
-
-    } catch (e) {
-      diagnostic.push({ url, erreur: e.name === "AbortError" ? "timeout" : e.message });
+  try {
+    const data = await Promise.any(SERVEURS_OVERPASS.map(url => interrogerServeur(url, requete)));
+    res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
+    if (nom) data.elements = classerParPertinence(data.elements, nom);
+    return res.status(200).json(data);
+  } catch (agregat) {
+    // Aucun miroir n'a renvoyé de données non vides. Si au moins un a répondu
+    // correctement mais vide, on renvoie cette réponse : la zone (ou le nom recherché)
+    // est probablement réellement sans résultat, plutôt qu'un vrai échec réseau.
+    const raisons = agregat.errors || [];
+    const reponseVide = raisons.find(e => e && e.videMaisValide);
+    if (reponseVide) {
+      res.setHeader("Cache-Control", "s-maxage=600"); // cache plus court pour les zones vides
+      return res.status(200).json(reponseVide.data);
     }
+    return res.status(502).json({ error: "Tous les serveurs Overpass ont échoué", diagnostic: raisons });
   }
-
-  // Aucun serveur n'a renvoyé de données non vides.
-  // Si au moins un a répondu correctement (mais vide), on renvoie cette réponse vide :
-  // la zone est probablement réellement sans café.
-  if (derniereReponseVide) {
-    res.setHeader("Cache-Control", "s-maxage=600"); // cache plus court pour les zones vides
-    return res.status(200).json(derniereReponseVide);
-  }
-
-  // Tous les serveurs ont vraiment échoué
-  return res.status(502).json({ error: "Tous les serveurs Overpass ont échoué", diagnostic });
 };

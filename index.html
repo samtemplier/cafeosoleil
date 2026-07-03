@@ -1144,14 +1144,23 @@
   // d'ici ; pour un café dans une autre ville, chercher d'abord cette ville (déjà
   // rapide et fiable via Mapbox), puis chercher le nom du café une fois la carte là-bas.
   const RAYON_RECHERCHE_NOM_DEG = 0.15; // ~15-17 km, calibré pour rester fiable
+  // Le geocoder attend la résolution complète d'externalGeocoder avant d'afficher QUOI
+  // QUE CE SOIT — y compris ses propres résultats Mapbox, normalement quasi instantanés.
+  // Sans plafond, une requête Overpass lente aurait donc aussi ralenti les adresses.
+  // On borne donc explicitement le temps que cette fonction peut prendre : passé ce délai,
+  // on renvoie une liste vide (les cafés OSM manqueront cette frappe, mais Mapbox reste
+  // réactif), plutôt que de laisser Overpass dicter la latence de toute la recherche.
+  const DELAI_MAX_RECHERCHE_OSM_MS = 2500;
   async function rechercheOsmPourGeocoder(requete) {
     const nom = requete.trim();
     if (nom.length < 3) return [];
     const centre = map.getCenter();
     const south = centre.lat - RAYON_RECHERCHE_NOM_DEG, north = centre.lat + RAYON_RECHERCHE_NOM_DEG;
     const west = centre.lng - RAYON_RECHERCHE_NOM_DEG, east = centre.lng + RAYON_RECHERCHE_NOM_DEG;
+    const controleur = new AbortController();
+    const idTimeout = setTimeout(() => controleur.abort(), DELAI_MAX_RECHERCHE_OSM_MS);
     try {
-      const r = await fetch(`${URL_API_CAFES}?south=${south}&west=${west}&north=${north}&east=${east}&nom=${encodeURIComponent(nom)}`);
+      const r = await fetch(`${URL_API_CAFES}?south=${south}&west=${west}&north=${north}&east=${east}&nom=${encodeURIComponent(nom)}`, { signal: controleur.signal });
       if (!r.ok) return [];
       const data = await r.json();
       return (data.elements || [])
@@ -1173,7 +1182,9 @@
           };
         });
     } catch (e) {
-      return [];
+      return []; // échec réseau ou délai dépassé (AbortError) : dégrade proprement, pas d'erreur visible
+    } finally {
+      clearTimeout(idTimeout);
     }
   }
 
