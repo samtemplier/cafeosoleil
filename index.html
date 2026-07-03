@@ -1150,8 +1150,16 @@
   // Aucun aller-retour réseau après le chargement initial de l'index : c'est ce qui
   // donne la réactivité "app native" demandée, au prix d'une couverture limitée à ces
   // villes plutôt que la France entière (à étendre en relançant le script au besoin).
+  // Minuscules + accents retirés : "café" et "caffè" doivent se comparer comme "cafe" et
+  // "caffe" (2 lettres d'écart, pas 4), sinon Fuse pénalise l'accent comme une vraie
+  // faute et "Caffè Roma" sort du seuil de tolérance pour une recherche "café roma".
+  function normaliser(texte) {
+    return texte.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  }
+
   let indexCafesPromesse = null;
   let indexFuse = null;
+  let villesConnuesNormalisees = null; // Set des noms de ville de l'index, pour extraireVilleEtNom
   function chargerIndexCafes() {
     if (!indexCafesPromesse) {
       indexCafesPromesse = fetch("data/cafes-index.json")
@@ -1161,8 +1169,10 @@
             keys: ["n"],
             threshold: 0.35, // tolère les fautes/variantes (café/caffè) sans devenir trop permissif
             ignoreLocation: true,
-            includeScore: true
+            includeScore: true,
+            getFn: (obj) => normaliser(obj.n) // compare les noms sans accents (voir normaliser)
           });
+          villesConnuesNormalisees = new Set(donnees.map(d => normaliser(d.v)));
           return donnees;
         })
         .catch(() => { indexFuse = null; return []; });
@@ -1171,14 +1181,33 @@
   }
   chargerIndexCafes(); // démarre le chargement dès l'ouverture de la page, avant la première recherche
 
+  // Si la requête se termine par un nom de ville connu de l'index (ex. "café roma
+  // cannes"), on l'extrait pour filtrer les résultats sur cette ville plutôt que de
+  // laisser "cannes" faire chuter le score de similarité du nom recherché tout entier
+  // (Fuse compare la requête ENTIÈRE au champ nom, qui ne contient pas la ville).
+  function extraireVilleEtNom(requete) {
+    const mots = requete.trim().split(/\s+/);
+    for (let n = Math.min(2, mots.length - 1); n >= 1; n--) {
+      const suffixe = normaliser(mots.slice(-n).join(" "));
+      if (villesConnuesNormalisees.has(suffixe)) {
+        return { nomRecherche: mots.slice(0, -n).join(" "), ville: suffixe };
+      }
+    }
+    return { nomRecherche: requete, ville: null };
+  }
+
   async function rechercheOsmPourGeocoder(requete) {
-    const nom = requete.trim();
-    if (nom.length < 3) return [];
+    const brut = requete.trim();
+    if (brut.length < 3) return [];
     await chargerIndexCafes();
     if (!indexFuse) return [];
 
+    const { nomRecherche, ville } = extraireVilleEtNom(brut);
     const centre = map.getCenter();
-    return indexFuse.search(nom, { limit: 15 })
+    let resultats = indexFuse.search(normaliser(nomRecherche), { limit: 25 });
+    if (ville) resultats = resultats.filter(r => normaliser(r.item.v) === ville);
+
+    return resultats
       // Fuse classe par pertinence textuelle seule ; parmi des scores proches, on
       // préfère les lieux près de la carte actuelle (comportement attendu : "près de moi").
       .map(({ item, score }) => {
