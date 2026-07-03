@@ -1234,6 +1234,51 @@
     attacherGlissement(poignee);
     attacherGlissement(resumeCompact);
 
+    // Fermer en glissant vers le bas depuis n'importe où dans le contenu (pas seulement
+    // la poignée) — comme demandé, façon "on peut toujours repousser la feuille vers le
+    // bas". Deux garde-fous pour ne pas gêner les usages normaux du contenu :
+    // - on ignore les glissements démarrés sur un contrôle interactif (slider, case à
+    //   cocher, boutons, champ de recherche/date) pour ne pas casser leur propre geste ;
+    // - on n'engage la fermeture que si le contenu est déjà tout en haut de son propre
+    //   scroll interne (sinon on laisse d'abord le scroll normal remonter le contenu).
+    (function attacherFermetureDepuisContenu() {
+      let depart = null;
+      contenu.addEventListener("touchstart", (e) => {
+        if (!zoneMobile() || glissement || panneau.classList.contains("replie")) return;
+        if (e.target.closest("input, button, select, a, .mapboxgl-ctrl-geocoder")) return;
+        if (contenu.scrollTop > 0) return;
+        depart = e.touches[0].clientY;
+      }, { passive: true });
+
+      contenu.addEventListener("touchmove", (e) => {
+        if (depart === null) return;
+        const deltaY = e.touches[0].clientY - depart;
+        if (deltaY <= 0 || contenu.scrollTop > 0) { depart = null; return; }
+        e.preventDefault();
+        if (!glissement) {
+          glissement = { departY: depart, hR: hauteurRepliee(), hD: hauteurDepliee(), hInitiale: hauteurDepliee() };
+          feuille.classList.add("glissement-actif");
+        }
+        let h = glissement.hInitiale - deltaY;
+        h = Math.min(glissement.hD, Math.max(glissement.hR, h));
+        feuille.style.height = h + "px";
+        resumeCompact.style.opacity = String(1 - progression(h, glissement.hR, glissement.hD));
+      }, { passive: false });
+
+      contenu.addEventListener("touchend", (e) => {
+        depart = null;
+        if (!glissement) return;
+        const { hR, hD } = glissement;
+        const hActuelle = parseFloat(feuille.style.height) || hD;
+        const p = progression(hActuelle, hR, hD);
+        feuille.classList.remove("glissement-actif");
+        resumeCompact.style.opacity = "";
+        glissement = null;
+        if (p > 0.4) ouvrirPanneau(); else fermerPanneau();
+        e.preventDefault();
+      });
+    })();
+
     // Réajuste la hauteur de la feuille (mobile) sur sa cible actuelle, tant qu'aucun
     // glissement n'est en cours — utile quand le contenu change de taille (texte plus
     // long, message "dézoom trop important" qui apparaît/disparaît, etc).
